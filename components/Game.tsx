@@ -19,6 +19,7 @@ import { EnvironmentLayer, preloadEnvironmentAssets } from "@/lib/environment";
 import SkinSelector from "@/components/SkinSelector";
 import WalletPanel from "@/components/WalletPanel";
 import OverlayDrawer from "@/components/OverlayDrawer";
+import MusicControl from "@/components/MusicControl";
 
 const WORLD_WIDTH = 2400;
 const WORLD_HEIGHT = 600;
@@ -571,6 +572,7 @@ export default function Game() {
         <SkinSelector activeSkin={activeSkin} notice={notice} onSelect={selectSkin} />
         <WalletPanel activeSkin={activeSkin} onSelectToken={(tokenId) => void selectSkin(tokenId)} />
       </OverlayDrawer>
+      <MusicControl />
     </div>
   );
 }
