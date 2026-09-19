@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 260" width="560" height="260">
+<defs></defs>
+
+<path d="M 172.0,242.0 Q 207.5,184.8 243.1,242.0" fill="none" stroke="#1f150f" stroke-width="23.545182890710688" stroke-linecap="round" opacity="1.0"/>
+<path d="M 172.0,242.0 Q 207.5,184.8 243.1,242.0" fill="none" stroke="#3b2a20" stroke-width="17.545182890710688" stroke-linecap="round" opacity="1.0"/>
+<path d="M 216.1,242.0 Q 256.8,162.4 297.4,242.0" fill="none" stroke="#1f150f" stroke-width="27.78322387066732" stroke-linecap="round" opacity="1.0"/>
+<path d="M 216.1,242.0 Q 256.8,162.4 297.4,242.0" fill="none" stroke="#3b2a20" stroke-width="21.78322387066732" stroke-linecap="round" opacity="1.0"/>
+<path d="M 284.5,242.0 Q 327.5,155.7 370.5,242.0" fill="none" stroke="#1f150f" stroke-width="22.25668318058043" stroke-linecap="round" opacity="1.0"/>
+<path d="M 284.5,242.0 Q 327.5,155.7 370.5,242.0" fill="none" stroke="#3b2a20" stroke-width="16.25668318058043" stroke-linecap="round" opacity="1.0"/>
+<path d="M 353.5,242.0 Q 391.1,159.3 428.7,242.0" fill="none" stroke="#1f150f" stroke-width="22.935673260290205" stroke-linecap="round" opacity="1.0"/>
+<path d="M 353.5,242.0 Q 391.1,159.3 428.7,242.0" fill="none" stroke="#3b2a20" stroke-width="16.935673260290205" stroke-linecap="round" opacity="1.0"/>
+<ellipse cx="280.0" cy="248.0" rx="60.0" ry="12.0" transform="rotate(0.0 280.0 248.0)" fill="#000000" opacity="0.18"/>
+<path d="M 259.3,240.0 Q 290.4,171.0 321.4,240.0" fill="none" stroke="#3a9188" stroke-width="2.2" stroke-linecap="round" opacity="0.28"/>
+</svg>

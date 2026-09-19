@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800" width="800" height="800">
+
+  <defs>
+    <linearGradient id="torsoShade" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#54402f"/>
+      <stop offset="100%" stop-color="#3c2a1e"/>
+    </linearGradient>
+    <filter id="softGlow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <style>
+      .body-dark   { fill:#4a3427; }
+      .body-shade  { fill:url(#torsoShade); }
+      .fur-med     { fill:#6b4a35; }
+      .face-red    { fill:#9c5f4a; }
+      .nose-tone   { fill:#7a3a2c; }
+      .beige       { fill:#d8bd9a; }
+      .eye-dark    { fill:#171009; }
+      .outline     { stroke:#1f150f; stroke-width:5; stroke-linejoin:round; stroke-linecap:round; }
+      .outline-thin{ stroke:#1f150f; stroke-width:3.5; stroke-linejoin:round; stroke-linecap:round; }
+      .no-outline  { stroke:none; }
+      .flow-copper { stroke:#c17a4a; }
+      .flow-teal   { stroke:#3a9188; }
+      .flow-amber  { stroke:#d9a441; }
+    </style>
+  </defs>
+
+  <g id="character" transform="translate(0.00,-30.00) rotate(-4.00 410 480)">
+
+    <g id="flow_back" filter="url(#softGlow)" fill="none" stroke-linecap="round">
+      <path class="flow-copper" opacity="0.45" stroke-width="4"
+            d="M 382,458 C 322,440 272,400 252,350 C 240,313 250,278 278,254" />
+      <path class="flow-teal" opacity="0.32" stroke-width="3"
+            d="M 402,470 C 344,452 296,418 276,374 C 262,344 266,314 284,294" />
+      <path class="flow-amber" opacity="0.3" stroke-width="3"
+            d="M 462,308 C 434,298 406,290 388,300" />
+    </g>
+
+
+    <g id="tail" transform="rotate(20.00 365 478)"
+       stroke-linecap="round" stroke-linejoin="round" fill="none">
+      <path stroke="#1f150f" stroke-width="40" d="M 365,478 C 300,470 250,430 235,375 C 222,330 235,285 275,258 C 295,245 315,248 318,262" />
+      <path class="body-dark" stroke="#4a3427" stroke-width="32" d="M 365,478 C 300,470 250,430 235,375 C 222,330 235,285 275,258 C 295,245 315,248 318,262" />
+    </g>
+
+    <g id="rear_leg" transform="translate(390,485) rotate(-50.00)" class="fur-med outline">
+      <rect x="-23.0" y="0" width="46" height="130" rx="23.0"/>
+      <g transform="translate(0,130) rotate(50.00)">
+        <rect x="-19.0" y="0" width="38" height="120" rx="19.0"/>
+        <ellipse class="body-dark outline-thin" cx="0" cy="120" rx="34" ry="17"/>
+      </g>
+    </g>
+
+    <g id="rear_arm" transform="translate(420,360) rotate(-55.00)" class="fur-med outline">
+      <rect x="-16.0" y="0" width="32" height="80" rx="16.0"/>
+      <g transform="translate(0,80) rotate(-5.00)">
+        <rect x="-13.0" y="0" width="26" height="70" rx="13.0"/>
+        <circle class="body-dark outline-thin" cx="0" cy="70" r="19"/>
+      </g>
+    </g>
+
+    <g id="body" transform="translate(430,390) scale(1,1.000) translate(-430,-390)">
+      <path class="body-shade outline" d="M 500,330 C 530,360 520,420 480,460 C 460,480 420,485 390,470 C 355,450 350,390 370,340 C 385,305 430,290 470,295 C 485,297 495,310 500,330 Z"/>
+      <ellipse class="beige no-outline" cx="436" cy="412" rx="30" ry="42" opacity="0.9"/>
+    </g>
+
+    <g id="front_leg" transform="translate(410,485) rotate(-20.00)" class="fur-med outline">
+      <rect x="-23.0" y="0" width="46" height="110" rx="23.0"/>
+      <g transform="translate(0,110) rotate(-3.00)">
+        <rect x="-19.0" y="0" width="38" height="110" rx="19.0"/>
+        <ellipse class="body-dark outline-thin" cx="0" cy="110" rx="38" ry="19"/>
+      </g>
+    </g>
+
+    <g id="front_arm" transform="translate(495,320) rotate(-40.00)" class="fur-med outline">
+      <rect x="-19.0" y="0" width="38" height="100" rx="19.0"/>
+      <g transform="translate(0,100) rotate(5.00)">
+        <rect x="-16.0" y="0" width="32" height="100" rx="16.0"/>
+        <circle class="body-dark outline-thin" cx="0" cy="100" r="25"/>
+      </g>
+    </g>
+    <g id="head_wrap">
+    <g id="head" transform="translate(0.00,0.00) rotate(0.00 550 280)">
+      
+      <g id="ear">
+        <ellipse class="body-dark outline" cx="495" cy="223" rx="26" ry="33" transform="rotate(-18 495 223)"/>
+        <ellipse class="beige no-outline" cx="497" cy="226" rx="13" ry="18" transform="rotate(-18 497 226)"/>
+      </g>
+      <circle id="skull" class="body-dark outline" cx="550" cy="280" r="82"/>
+      <ellipse id="face" class="face-red outline" cx="596" cy="300" rx="56" ry="50"/>
+      <g id="nose">
+        <ellipse class="nose-tone outline" cx="602" cy="368" rx="36" ry="62" transform="rotate(9 602 368)"/>
+        <ellipse class="beige no-outline" cx="590" cy="342" rx="9" ry="17" transform="rotate(9 590 342)" opacity="0.35"/>
+      </g>
+      <g id="eye">
+        <circle class="eye-dark no-outline" cx="574" cy="268" r="9"/>
+        <circle class="beige no-outline" cx="577" cy="265" r="2.2"/>
+      </g>
+
+    </g></g>
+  </g>
+</svg>

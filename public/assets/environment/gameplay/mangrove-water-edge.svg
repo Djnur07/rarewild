@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 320" width="480" height="320">
+<defs><linearGradient id="waterGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#123a36"/><stop offset="100%" stop-color="#0f2e2c"/></linearGradient><linearGradient id="mudGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#4a3526"/><stop offset="100%" stop-color="#3b2a20"/></linearGradient></defs>
+
+<path d="M 0.0,0.0 L 0.0,159.1 L 24.0,156.1 L 48.0,155.1 L 72.0,157.1 L 96.0,160.1 L 120.0,160.4 L 144.0,156.0 L 168.0,148.6 L 192.0,141.9 L 216.0,139.2 L 240.0,140.9 L 264.0,143.9 L 288.0,144.9 L 312.0,142.9 L 336.0,139.9 L 360.0,139.6 L 384.0,144.0 L 408.0,151.4 L 432.0,158.1 L 456.0,160.8 L 480.0,159.1 L 480.0,0.0 Z" fill="url(#mudGrad)" stroke="#1f150f" stroke-width="4"/>
+<path d="M 0.0,159.1 L 24.0,156.1 L 48.0,155.1 L 72.0,157.1 L 96.0,160.1 L 120.0,160.4 L 144.0,156.0 L 168.0,148.6 L 192.0,141.9 L 216.0,139.2 L 240.0,140.9 L 264.0,143.9 L 288.0,144.9 L 312.0,142.9 L 336.0,139.9 L 360.0,139.6 L 384.0,144.0 L 408.0,151.4 L 432.0,158.1 L 456.0,160.8 L 480.0,159.1 L 480.0,320.0 L 0.0,320.0 Z" fill="url(#waterGrad)"/>
+<path d="M 0.0,183.7 L 30.0,181.2 L 60.0,180.8 L 90.0,179.6 L 120.0,175.8 L 150.0,174.8 L 180.0,179.7 L 210.0,184.4 L 240.0,183.7 L 270.0,181.2 L 300.0,180.8 L 330.0,179.6 L 360.0,175.8 L 390.0,174.8 L 420.0,179.7 L 450.0,184.4 L 480.0,183.7" fill="none" stroke="#2c5a52" stroke-width="2" opacity="0.2"/>
+<path d="M 0.0,216.3 L 30.0,212.8 L 60.0,212.5 L 90.0,211.8 L 120.0,209.9 L 150.0,211.7 L 180.0,217.3 L 210.0,219.7 L 240.0,216.3 L 270.0,212.8 L 300.0,212.5 L 330.0,211.8 L 360.0,209.9 L 390.0,211.7 L 420.0,217.3 L 450.0,219.7 L 480.0,216.3" fill="none" stroke="#2c5a52" stroke-width="2" opacity="0.2"/>
+<path d="M 270.4,158.0 Q 281.5,128.1 292.7,158.0" fill="none" stroke="#1f150f" stroke-width="11.484079012325036" stroke-linecap="round" opacity="1.0"/>
+<path d="M 270.4,158.0 Q 281.5,128.1 292.7,158.0" fill="none" stroke="#3b2a20" stroke-width="5.484079012325037" stroke-linecap="round" opacity="1.0"/>
+<path d="M 288.4,158.0 Q 302.6,127.1 316.9,158.0" fill="none" stroke="#1f150f" stroke-width="12.396336945699314" stroke-linecap="round" opacity="1.0"/>
+<path d="M 288.4,158.0 Q 302.6,127.1 316.9,158.0" fill="none" stroke="#3b2a20" stroke-width="6.396336945699314" stroke-linecap="round" opacity="1.0"/>
+<path d="M 313.3,158.0 Q 324.7,129.3 336.2,158.0" fill="none" stroke="#1f150f" stroke-width="12.111712019148936" stroke-linecap="round" opacity="1.0"/>
+<path d="M 313.3,158.0 Q 324.7,129.3 336.2,158.0" fill="none" stroke="#3b2a20" stroke-width="6.111712019148936" stroke-linecap="round" opacity="1.0"/>
+<ellipse cx="297.6" cy="160.0" rx="20.0" ry="4.0" transform="rotate(0.0 297.6 160.0)" fill="#000000" opacity="0.18"/>
+<path d="M 0.0,159.1 L 24.0,156.1 L 48.0,155.1 L 72.0,157.1 L 96.0,160.1 L 120.0,160.4 L 144.0,156.0 L 168.0,148.6 L 192.0,141.9 L 216.0,139.2 L 240.0,140.9 L 264.0,143.9 L 288.0,144.9 L 312.0,142.9 L 336.0,139.9 L 360.0,139.6 L 384.0,144.0 L 408.0,151.4 L 432.0,158.1 L 456.0,160.8 L 480.0,159.1" fill="none" stroke="#cdb896" stroke-width="2" opacity="0.3"/>
+</svg>

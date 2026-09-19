@@ -1,15 +1,20 @@
 {
-  "name": "nasalis-flow-game",
+  "name": "rarewild-game",
   "version": "0.1.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "rarewild:build-data": "node scripts/rareWild/build-dataset.ts",
+    "rarewild:sync-art": "node scripts/rareWild/sync-artwork.ts",
+    "rarewild:validate": "node scripts/rareWild/validate-dataset.ts",
+    "ownership:validate": "node scripts/ownership/validate-ownership.ts"
   },
   "dependencies": {
     "next": "16.3.5",
+    "phaser": "^4.2.1",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },

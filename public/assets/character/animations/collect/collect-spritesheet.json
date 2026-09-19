@@ -1,0 +1,8 @@
+{
+  "animation": "collect",
+  "frameCount": 5,
+  "frameWidth": 300,
+  "frameHeight": 300,
+  "sheet": "collect-spritesheet.png",
+  "layout": "single-row"
+}

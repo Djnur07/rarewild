@@ -1,0 +1,8 @@
+{
+  "animation": "run",
+  "frameCount": 8,
+  "frameWidth": 300,
+  "frameHeight": 300,
+  "sheet": "run-spritesheet.png",
+  "layout": "single-row"
+}

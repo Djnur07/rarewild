@@ -1,0 +1,8 @@
+{
+  "animation": "hit",
+  "frameCount": 4,
+  "frameWidth": 300,
+  "frameHeight": 300,
+  "sheet": "hit-spritesheet.png",
+  "layout": "single-row"
+}

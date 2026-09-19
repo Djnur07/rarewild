@@ -1,0 +1,8 @@
+{
+  "animation": "land",
+  "frameCount": 4,
+  "frameWidth": 300,
+  "frameHeight": 300,
+  "sheet": "land-spritesheet.png",
+  "layout": "single-row"
+}

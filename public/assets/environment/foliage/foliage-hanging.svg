@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 260" width="300" height="260">
+<defs></defs>
+
+<path d="M 107.6,6.0 Q 110.1,86.3 107.6,152.0" fill="none" stroke="#1f150f" stroke-width="17.4" stroke-linecap="round"/>
+<path d="M 107.6,6.0 Q 110.1,86.3 107.6,152.0" fill="none" stroke="#233a2d" stroke-width="13.4" stroke-linecap="round"/>
+<ellipse cx="107.6" cy="152.0" rx="17.4" ry="12.0" transform="rotate(-2.4 107.6 152.0)" fill="#233a2d" opacity="1.0"/>
+<path d="M 132.1,6.0 Q 132.0,54.0 132.1,93.3" fill="none" stroke="#1f150f" stroke-width="19.1" stroke-linecap="round"/>
+<path d="M 132.1,6.0 Q 132.0,54.0 132.1,93.3" fill="none" stroke="#3d5c44" stroke-width="15.1" stroke-linecap="round"/>
+<ellipse cx="132.1" cy="93.3" rx="19.6" ry="13.6" transform="rotate(-9.2 132.1 93.3)" fill="#3d5c44" opacity="1.0"/>
+<path d="M 149.7,6.0 Q 144.7,88.4 149.7,155.8" fill="none" stroke="#1f150f" stroke-width="14.9" stroke-linecap="round"/>
+<path d="M 149.7,6.0 Q 144.7,88.4 149.7,155.8" fill="none" stroke="#3d5c44" stroke-width="10.9" stroke-linecap="round"/>
+<ellipse cx="149.7" cy="155.8" rx="14.2" ry="9.8" transform="rotate(-13.2 149.7 155.8)" fill="#3d5c44" opacity="1.0"/>
+<path d="M 171.5,6.0 Q 184.3,97.6 171.5,172.5" fill="none" stroke="#1f150f" stroke-width="15.8" stroke-linecap="round"/>
+<path d="M 171.5,6.0 Q 184.3,97.6 171.5,172.5" fill="none" stroke="#2f4a3a" stroke-width="11.8" stroke-linecap="round"/>
+<ellipse cx="171.5" cy="172.5" rx="15.4" ry="10.6" transform="rotate(9.7 171.5 172.5)" fill="#2f4a3a" opacity="1.0"/>
+<path d="M 191.7,6.0 Q 189.4,94.6 191.7,167.1" fill="none" stroke="#1f150f" stroke-width="18.1" stroke-linecap="round"/>
+<path d="M 191.7,6.0 Q 189.4,94.6 191.7,167.1" fill="none" stroke="#3d5c44" stroke-width="14.1" stroke-linecap="round"/>
+<ellipse cx="191.7" cy="167.1" rx="18.4" ry="12.7" transform="rotate(4.1 191.7 167.1)" fill="#3d5c44" opacity="1.0"/>
+</svg>

@@ -1,0 +1,8 @@
+{
+  "animation": "idle",
+  "frameCount": 6,
+  "frameWidth": 300,
+  "frameHeight": 300,
+  "sheet": "idle-spritesheet.png",
+  "layout": "single-row"
+}

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 420" width="1920" height="420">
+<defs><radialGradient id="mistGrad_background_0" cx="50%" cy="50%" r="50%"><stop offset="0%" stop-color="#cdb896" stop-opacity="0.122"/><stop offset="100%" stop-color="#cdb896" stop-opacity="0"/></radialGradient><radialGradient id="mistGrad_background_1" cx="50%" cy="50%" r="50%"><stop offset="0%" stop-color="#7c9186" stop-opacity="0.120"/><stop offset="100%" stop-color="#7c9186" stop-opacity="0"/></radialGradient><radialGradient id="mistGrad_background_2" cx="50%" cy="50%" r="50%"><stop offset="0%" stop-color="#7c9186" stop-opacity="0.170"/><stop offset="100%" stop-color="#7c9186" stop-opacity="0"/></radialGradient><radialGradient id="mistGrad_background_3" cx="50%" cy="50%" r="50%"><stop offset="0%" stop-color="#7c9186" stop-opacity="0.188"/><stop offset="100%" stop-color="#7c9186" stop-opacity="0"/></radialGradient><radialGradient id="mistGrad_background_4" cx="50%" cy="50%" r="50%"><stop offset="0%" stop-color="#cdb896" stop-opacity="0.170"/><stop offset="100%" stop-color="#cdb896" stop-opacity="0"/></radialGradient><radialGradient id="mistGrad_background_5" cx="50%" cy="50%" r="50%"><stop offset="0%" stop-color="#cdb896" stop-opacity="0.191"/><stop offset="100%" stop-color="#cdb896" stop-opacity="0"/></radialGradient></defs>
+
+<ellipse cx="160.0" cy="138.9" rx="354.7" ry="103.7" fill="url(#mistGrad_background_0)"/>
+<ellipse cx="480.0" cy="296.8" rx="282.7" ry="81.1" fill="url(#mistGrad_background_1)"/>
+<ellipse cx="800.0" cy="112.1" rx="352.5" ry="84.2" fill="url(#mistGrad_background_2)"/>
+<ellipse cx="1120.0" cy="172.1" rx="346.0" ry="93.6" fill="url(#mistGrad_background_3)"/>
+<ellipse cx="1440.0" cy="112.7" rx="196.9" ry="90.6" fill="url(#mistGrad_background_4)"/>
+<ellipse cx="1760.0" cy="349.2" rx="331.4" ry="89.8" fill="url(#mistGrad_background_5)"/>
+</svg>

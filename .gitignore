@@ -39,3 +39,12 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# generated character variants (scripts/character/generateVariant.ts output)
+/public/assets/character/variants/
+
+# RAREWILD artwork: 157 MB, filled locally by scripts/rareWild/sync-artwork.ts (or served from a CDN)
+/public/assets/rareWild/skins/
+
+# but keep the documented template committed
+!.env.example

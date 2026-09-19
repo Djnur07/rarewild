@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 380 190" width="380" height="190">
+<defs></defs>
+
+<path d="M 135.7,172.0 Q 159.9,106.6 184.2,172.0" fill="none" stroke="#1f150f" stroke-width="19.66242309347961" stroke-linecap="round" opacity="1.0"/>
+<path d="M 135.7,172.0 Q 159.9,106.6 184.2,172.0" fill="none" stroke="#3b2a20" stroke-width="13.66242309347961" stroke-linecap="round" opacity="1.0"/>
+<path d="M 171.6,172.0 Q 199.0,117.0 226.4,172.0" fill="none" stroke="#1f150f" stroke-width="21.20993854931148" stroke-linecap="round" opacity="1.0"/>
+<path d="M 171.6,172.0 Q 199.0,117.0 226.4,172.0" fill="none" stroke="#3b2a20" stroke-width="15.209938549311483" stroke-linecap="round" opacity="1.0"/>
+<path d="M 221.0,172.0 Q 243.4,129.6 265.9,172.0" fill="none" stroke="#1f150f" stroke-width="16.25126141151447" stroke-linecap="round" opacity="1.0"/>
+<path d="M 221.0,172.0 Q 243.4,129.6 265.9,172.0" fill="none" stroke="#3b2a20" stroke-width="10.251261411514472" stroke-linecap="round" opacity="1.0"/>
+<ellipse cx="190.0" cy="176.0" rx="40.0" ry="8.0" transform="rotate(0.0 190.0 176.0)" fill="#000000" opacity="0.18"/>
+</svg>
