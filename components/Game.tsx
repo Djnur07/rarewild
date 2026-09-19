@@ -16,6 +16,7 @@ import {
   type RareWildSkin,
 } from "@/lib/rareWild";
 import { EnvironmentLayer, preloadEnvironmentAssets } from "@/lib/environment";
+import { createRainEffect, type RainEffect } from "@/lib/weather/rain";
 import SkinSelector from "@/components/SkinSelector";
 import WalletPanel from "@/components/WalletPanel";
 import OverlayDrawer from "@/components/OverlayDrawer";
@@ -115,6 +116,7 @@ export default function Game() {
       class MainScene extends Phaser.Scene {
         private character!: InstanceType<typeof RaraCharacter>;
         private environment!: EnvironmentLayer;
+        private rain?: RainEffect;
         /** Screen-space HUD objects with the position each has on the 800x600 design frame. */
         private hud: {
           object: Phaser.GameObjects.Text | Phaser.GameObjects.Rectangle | Phaser.GameObjects.Image;
@@ -154,6 +156,10 @@ export default function Game() {
             groundY: GROUND_Y,
             seed: ENVIRONMENT_SEED,
           });
+
+          // Purely visual weather. Created here, before the character, so its
+          // background layer is drawn behind the character (see lib/weather/rain.ts).
+          this.rain = createRainEffect(Phaser, this);
 
           this.registerHud(
             this.add
@@ -221,6 +227,8 @@ export default function Game() {
           this.events.once("shutdown", () => {
             this.alive = false;
             this.scale.off(Phaser.Scale.Events.RESIZE, this.layout, this);
+            this.rain?.destroy();
+            this.rain = undefined;
             skinApiRef.current = null;
           });
           this.applySkin(requestedSkinRef.current);
@@ -244,6 +252,13 @@ export default function Game() {
           const height = this.scale.height;
           const zoom = height / DESIGN_HEIGHT;
           this.cameras.main.setZoom(zoom);
+          // The area a scroll-factor-0 object can see, in camera-local coordinates: the rain fills exactly this.
+          this.rain?.resize({
+            left: width / 2 - width / (2 * zoom),
+            top: height / 2 - height / (2 * zoom),
+            width: width / zoom,
+            height: height / zoom,
+          });
 
           const hudScale = Math.min(1, width / zoom / DESIGN_WIDTH);
           this.hudScale = hudScale;
