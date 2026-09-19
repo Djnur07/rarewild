@@ -19,6 +19,12 @@
   }
 }
 
+html,
+body {
+  height: 100%;
+  overflow: hidden; /* the game fills the window; the page itself never scrolls */
+}
+
 body {
   background: var(--background);
   color: var(--foreground);

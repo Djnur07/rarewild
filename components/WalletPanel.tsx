@@ -40,7 +40,7 @@ export default function WalletPanel({ activeSkin, onSelectToken }: Props) {
   };
 
   return (
-    <section className="w-[800px] max-w-full font-mono text-sm text-zinc-200" data-testid="wallet-panel">
+    <section className="w-full font-mono text-sm text-zinc-200" data-testid="wallet-panel">
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-zinc-400">Wallet</span>
         {session ? (
@@ -137,7 +137,7 @@ export default function WalletPanel({ activeSkin, onSelectToken }: Props) {
               {state.skins.length} owned - click one to wear it as Rara&apos;s skin
               {state.ignored > 0 && `; ${state.ignored} unrecognized token(s) ignored`}
             </div>
-            <ul className="mt-2 grid grid-cols-8 gap-2" data-testid="owned-list">
+            <ul className="mt-2 grid grid-cols-6 gap-2" data-testid="owned-list">
               {state.skins.slice(0, visibleCount).map((skin) => (
                 <li key={skin.tokenId}>
                   <button
@@ -150,7 +150,7 @@ export default function WalletPanel({ activeSkin, onSelectToken }: Props) {
                     onClick={blurAfter(() => onSelectToken(skin.tokenId))}
                   >
                     {/* eslint-disable-next-line @next/next/no-img-element -- static collection artwork; base URL may point at a CDN */}
-                    <img src={skin.imagePath} alt="" width={64} height={64} loading="lazy" decoding="async" className="rounded" />
+                    <img src={skin.imagePath} alt="" width={64} height={64} loading="lazy" decoding="async" className="h-auto w-full rounded" />
                     #{skin.tokenId}
                   </button>
                 </li>

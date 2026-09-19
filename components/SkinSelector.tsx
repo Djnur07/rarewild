@@ -24,7 +24,7 @@ export default function SkinSelector({ activeSkin, notice, onSelect }: Props) {
     `rounded px-3 py-1 text-sm ${active ? "bg-emerald-600 text-white" : "bg-zinc-800 text-zinc-200 hover:bg-zinc-700"}`;
 
   return (
-    <div className="w-[800px] max-w-full font-mono text-sm text-zinc-200" data-testid="skin-selector">
+    <div className="w-full font-mono text-sm text-zinc-200" data-testid="skin-selector">
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-zinc-400">Skin</span>
         <button

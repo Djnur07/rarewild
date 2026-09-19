@@ -18,6 +18,7 @@ import {
 import { EnvironmentLayer, preloadEnvironmentAssets } from "@/lib/environment";
 import SkinSelector from "@/components/SkinSelector";
 import WalletPanel from "@/components/WalletPanel";
+import OverlayDrawer from "@/components/OverlayDrawer";
 
 const WORLD_WIDTH = 2400;
 const WORLD_HEIGHT = 600;
@@ -34,6 +35,13 @@ const COLLECT_RADIUS = 40;
 const HIT_RADIUS = 30;
 const HAZARD_COOLDOWN_MS = 1500;
 const UI_DEPTH = 1000;
+/**
+ * The HUD (title, buttons, portrait) is laid out on an 800x600 design frame.
+ * The canvas fills the whole window; the camera zooms to the window height and
+ * the HUD is re-centered on resize (see MainScene.layout).
+ */
+const DESIGN_WIDTH = 800;
+const DESIGN_HEIGHT = WORLD_HEIGHT;
 const PORTRAIT_SIZE = 88;
 const PORTRAIT_MARGIN = 16;
 
@@ -106,6 +114,13 @@ export default function Game() {
       class MainScene extends Phaser.Scene {
         private character!: InstanceType<typeof RaraCharacter>;
         private environment!: EnvironmentLayer;
+        /** Screen-space HUD objects with the position each has on the 800x600 design frame. */
+        private hud: {
+          object: Phaser.GameObjects.Text | Phaser.GameObjects.Rectangle | Phaser.GameObjects.Image;
+          x: number;
+          y: number;
+        }[] = [];
+        private hudScale = 1;
         private portraitFrame!: Phaser.GameObjects.Rectangle;
         private portrait!: Phaser.GameObjects.Image;
         private skinRequest = 0;
@@ -139,24 +154,28 @@ export default function Game() {
             seed: ENVIRONMENT_SEED,
           });
 
-          this.add
-            .text(400, 60, "RAREWILD", {
-              fontSize: "42px",
-              color: "#ffffff",
-              fontStyle: "bold",
-            })
-            .setOrigin(0.5)
-            .setScrollFactor(0)
-            .setDepth(UI_DEPTH);
+          this.registerHud(
+            this.add
+              .text(400, 60, "RAREWILD", {
+                fontSize: "42px",
+                color: "#ffffff",
+                fontStyle: "bold",
+              })
+              .setOrigin(0.5)
+              .setScrollFactor(0)
+              .setDepth(UI_DEPTH),
+          );
 
-          this.add
-            .text(400, 115, "SAVE THE MANGROVE", {
-              fontSize: "24px",
-              color: "#9ee493",
-            })
-            .setOrigin(0.5)
-            .setScrollFactor(0)
-            .setDepth(UI_DEPTH);
+          this.registerHud(
+            this.add
+              .text(400, 115, "SAVE THE MANGROVE", {
+                fontSize: "24px",
+                color: "#9ee493",
+              })
+              .setOrigin(0.5)
+              .setScrollFactor(0)
+              .setDepth(UI_DEPTH),
+          );
 
           registerRaraAnimations(this);
 
@@ -191,14 +210,53 @@ export default function Game() {
           this.createControls();
           this.createSkinPortrait();
 
+          // The canvas tracks the window size; re-fit the camera and HUD whenever it changes.
+          this.layout();
+          this.scale.on(Phaser.Scale.Events.RESIZE, this.layout, this);
+
           // Hand the React shell a way to change skins, then apply whichever skin
           // was requested before the scene finished starting (default if none).
           skinApiRef.current = { applySkin: (skin) => this.applySkin(skin) };
           this.events.once("shutdown", () => {
             this.alive = false;
+            this.scale.off(Phaser.Scale.Events.RESIZE, this.layout, this);
             skinApiRef.current = null;
           });
           this.applySkin(requestedSkinRef.current);
+        }
+
+        private registerHud(object: (typeof this.hud)[number]["object"]) {
+          this.hud.push({ object, x: object.x, y: object.y });
+        }
+
+        /**
+         * Fit the game to the current canvas size. The camera zooms so the whole
+         * 600px-tall world always fills the window height; a wider window just
+         * shows more of the world. Screen-space HUD objects are scaled by that same
+         * zoom, so each keeps its place on the 800x600 design frame once re-centered
+         * on the window. In a window too narrow for the 800px-wide frame, the HUD
+         * alone shrinks horizontally (`hudScale`) so the controls stay on screen.
+         * Purely presentational — no gameplay values are touched.
+         */
+        private layout() {
+          const width = this.scale.width;
+          const height = this.scale.height;
+          const zoom = height / DESIGN_HEIGHT;
+          this.cameras.main.setZoom(zoom);
+
+          const hudScale = Math.min(1, width / zoom / DESIGN_WIDTH);
+          this.hudScale = hudScale;
+          // Render text at the on-screen size so the zoom doesn't blur it.
+          const textResolution = Math.min(4, Math.max(1, zoom * hudScale));
+          for (const { object, x, y } of this.hud) {
+            object.setPosition(
+              width / 2 + (x - DESIGN_WIDTH / 2) * hudScale,
+              height / 2 + (y - DESIGN_HEIGHT / 2),
+            );
+            if (object === this.portrait) object.setDisplaySize(PORTRAIT_SIZE * hudScale, PORTRAIT_SIZE * hudScale);
+            else object.setScale(hudScale);
+            if (object instanceof Phaser.GameObjects.Text) object.setResolution(textResolution);
+          }
         }
 
         /** Skins are purely cosmetic: this never touches movement, animation state, or collisions. */
@@ -223,12 +281,14 @@ export default function Game() {
             .setScrollFactor(0)
             .setDepth(UI_DEPTH)
             .setVisible(false);
+          this.registerHud(this.portraitFrame);
           this.portrait = this.add
             .image(PORTRAIT_MARGIN, PORTRAIT_MARGIN, "__DEFAULT")
             .setOrigin(0)
             .setScrollFactor(0)
             .setDepth(UI_DEPTH)
             .setVisible(false);
+          this.registerHud(this.portrait);
         }
 
         /** Show the selected token's artwork (loaded on demand, only for this token); hide it for the default skin. */
@@ -236,7 +296,7 @@ export default function Game() {
           const key = await ensureSkinPortrait(this, skin);
           if (!this.alive || request !== this.skinRequest) return; // scene closed or a newer skin was picked
           const visible = key !== null;
-          if (key) this.portrait.setTexture(key).setDisplaySize(PORTRAIT_SIZE, PORTRAIT_SIZE);
+          if (key) this.portrait.setTexture(key).setDisplaySize(PORTRAIT_SIZE * this.hudScale, PORTRAIT_SIZE * this.hudScale);
           this.portrait.setVisible(visible);
           this.portraitFrame.setVisible(visible);
         }
@@ -473,6 +533,7 @@ export default function Game() {
           });
 
           for (const button of [leftButton, rightButton, jumpButton, swingButton]) {
+            this.registerHud(button);
             button.on("pointerover", () => {
               button.setAlpha(0.7);
             });
@@ -486,8 +547,8 @@ export default function Game() {
 
       game = new Phaser.Game({
         type: Phaser.AUTO,
-        width: 800,
-        height: 600,
+        // The canvas always matches its container (which fills the window).
+        scale: { mode: Phaser.Scale.RESIZE, width: "100%", height: "100%" },
         parent: gameRef.current,
         scene: MainScene,
       });
@@ -504,10 +565,12 @@ export default function Game() {
   }, []);
 
   return (
-    <div className="flex flex-col items-center gap-3">
-      <div ref={gameRef} />
-      <SkinSelector activeSkin={activeSkin} notice={notice} onSelect={selectSkin} />
-      <WalletPanel activeSkin={activeSkin} onSelectToken={(tokenId) => void selectSkin(tokenId)} />
+    <div className="relative h-full w-full">
+      <div ref={gameRef} className="absolute inset-0 overflow-hidden [&>canvas]:block" />
+      <OverlayDrawer label="Wallet & Skins">
+        <SkinSelector activeSkin={activeSkin} notice={notice} onSelect={selectSkin} />
+        <WalletPanel activeSkin={activeSkin} onSelectToken={(tokenId) => void selectSkin(tokenId)} />
+      </OverlayDrawer>
     </div>
   );
 }
