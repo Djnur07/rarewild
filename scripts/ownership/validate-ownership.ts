@@ -21,7 +21,7 @@ import { isAddress, shortenAddress } from "../../lib/ownership/address.ts";
 import { parseCollectionConfig, readCollectionConfig } from "../../lib/ownership/config.ts";
 import { fetchOwnedTokenIds, mapWithConcurrency } from "../../lib/ownership/lookup.ts";
 import { loadOwnedTokenIds } from "../../lib/ownership/ownedRareWild.ts";
-import { RpcError } from "../../lib/ownership/rpc.ts";
+import { RpcError, createProviderTransport } from "../../lib/ownership/rpc.ts";
 import { normalizeTokenIds, resolveOwnedSkins } from "../../lib/ownership/tokens.ts";
 import { parseChainId } from "../../lib/ownership/wallet.ts";
 import { decodeRareWildDataset } from "../../lib/rareWild/metadata.ts";
@@ -131,6 +131,14 @@ async function main() {
   const withRpc = parseCollectionConfig({ contractAddress: CONTRACT, chainId: "137", rpcUrl: "https://rpc.example" });
   r = await loadOwnedTokenIds({ config: withRpc, owner: ALICE, walletProvider, walletChainId: 1, transport: createMockContract({ tokens, enumerable: true, chainId: 1 }).transport });
   check("pipeline: RPC on a different chain than configured -> error", r.status === "error" && /chain 1/.test(r.message), r.status === "error" ? r.message : "");
+
+  // --- a wallet that never answers, or rejects, ends in a readable error (never a hang or a throw into the UI)
+  const silentWallet = { request: () => new Promise<never>(() => {}) };
+  r = await loadOwnedTokenIds({ config: configured, owner: ALICE, walletProvider: silentWallet, walletChainId: 137, transport: createProviderTransport(silentWallet, 30) });
+  check("pipeline: wallet that never answers -> error, not an endless wait", r.status === "error" && /did not respond/.test(r.message), r.status === "error" ? r.message : "");
+  const rejectingWallet = { request: () => Promise.reject(Object.assign(new Error("User denied"), { code: 4001 })) };
+  const rejected = await rejects(() => createProviderTransport(rejectingWallet, 30).request("eth_call", []));
+  check("provider transport: wallet errors keep their code", rejected instanceof RpcError && rejected.code === 4001);
 
   // --- token ids -> local metadata
   const dataset = JSON.parse(await readFile(join(import.meta.dirname, "../../public/data/rarewild-metadata.json"), "utf8"));

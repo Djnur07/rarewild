@@ -10,7 +10,12 @@
     "rarewild:build-data": "node scripts/rareWild/build-dataset.ts",
     "rarewild:sync-art": "node scripts/rareWild/sync-artwork.ts",
     "rarewild:validate": "node scripts/rareWild/validate-dataset.ts",
-    "ownership:validate": "node scripts/ownership/validate-ownership.ts"
+    "ownership:validate": "node scripts/ownership/validate-ownership.ts",
+    "ownership:probe": "node --env-file=.env.local scripts/ownership/probe-collection.ts",
+    "movement:validate": "node scripts/movement/validate-movement.ts",
+    "hunter:validate": "node scripts/hunter/validate-hunter.ts",
+    "obstacles:validate": "node scripts/obstacles/validate-obstacles.ts",
+    "collectibles:validate": "node scripts/collectibles/validate-collectibles.ts"
   },
   "dependencies": {
     "next": "16.3.5",

@@ -16,24 +16,51 @@ import {
   type RareWildSkin,
 } from "@/lib/rareWild";
 import { EnvironmentLayer, preloadEnvironmentAssets } from "@/lib/environment";
+import {
+  attachCharacterBody,
+  CharacterMotor,
+  createKeyboardMovementInput,
+  createSolids,
+  DEFAULT_MOVEMENT_CONFIG,
+  isTypingInField,
+  type KeyboardMovementInput,
+  type Locomotion,
+} from "@/lib/movement";
+import {
+  createCaughtOverlay,
+  DEFAULT_HUNTER_CONFIG,
+  DEFAULT_HUNTER_SPAWN,
+  Hunter,
+  resolveHunterSpawnX,
+  type CaughtOverlay,
+  type HunterEvent,
+  type HunterTarget,
+} from "@/lib/hunter";
+import {
+  CHARACTER_SCALE,
+  GROUND_SURFACE_Y,
+  GROUND_Y,
+  HAZARD_X,
+  MOVE_MAX_X,
+  MOVE_MIN_X,
+  PLAYER_START_X,
+  SEED_X,
+  WORLD_HEIGHT,
+  WORLD_WIDTH,
+} from "@/lib/level/constants";
+import { createObstacles, FIRST_LEVEL_OBSTACLES, isClearOfObstacles } from "@/lib/obstacles";
+import { Collectibles } from "@/lib/collectibles";
 import { createRainEffect, type RainEffect } from "@/lib/weather/rain";
 import SkinSelector from "@/components/SkinSelector";
 import WalletPanel from "@/components/WalletPanel";
 import OverlayDrawer from "@/components/OverlayDrawer";
 import MusicControl from "@/components/MusicControl";
 
-const WORLD_WIDTH = 2400;
-const WORLD_HEIGHT = 600;
-const GROUND_Y = 420;
-const JUMP_HEIGHT = 140;
-const JUMP_DURATION = 260;
-const MOVE_STEP = 13; // 2.6x the original value (5) — within the requested 2.5x-3x range
-const MOVE_MIN_X = 60;
-const MOVE_MAX_X = WORLD_WIDTH - 60;
-const CHARACTER_SCALE = 0.5;
-const SEED_X = 620;
-const HAZARD_X = 140;
+/** After a catch: how long the world freezes (hit-stop) before the CAUGHT screen appears, ms. */
+const CAUGHT_HITSTOP_MS = 180;
 const COLLECT_RADIUS = 40;
+/** A respawning seed keeps this far from the edges of obstacles. */
+const SEED_OBSTACLE_MARGIN = 30;
 const HIT_RADIUS = 30;
 const HAZARD_COOLDOWN_MS = 1500;
 const UI_DEPTH = 1000;
@@ -128,13 +155,18 @@ export default function Game() {
         private portrait!: Phaser.GameObjects.Image;
         private skinRequest = 0;
         private alive = true;
-        private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
+        private motor!: CharacterMotor;
+        private hunter!: Hunter;
+        private caughtOverlay!: CaughtOverlay;
+        private caught = false;
+        private collectibles!: Collectibles;
+        private counterText!: Phaser.GameObjects.Text;
+        private keyboardInput!: KeyboardMovementInput;
         private seed!: Phaser.GameObjects.Arc;
         private hazard!: Phaser.GameObjects.Rectangle;
-        private facing: 1 | -1 = 1;
         private leftPressed = false;
         private rightPressed = false;
-        private movedThisFrame = false;
+        private jumpButtonHeld = false;
         private oneShotActive = false;
         private hazardCooldownUntil = 0;
 
@@ -161,6 +193,14 @@ export default function Game() {
           // background layer is drawn behind the character (see lib/weather/rain.ts).
           this.rain = createRainEffect(Phaser, this);
 
+          // Solid level geometry and pickups. Created before the character so they draw behind
+          // it. The obstacles are static solids: Rara and the Hunter collide with them through
+          // the colliders below, and the Hunter's line of sight is blocked by them. Collectibles
+          // are overlap-only (see lib/obstacles and lib/collectibles).
+          const solids = createSolids(this, WORLD_WIDTH, GROUND_SURFACE_Y, WORLD_HEIGHT);
+          createObstacles(this, solids, GROUND_SURFACE_Y);
+          this.collectibles = new Collectibles(this, { groundSurfaceY: GROUND_SURFACE_Y });
+
           this.registerHud(
             this.add
               .text(400, 60, "RAREWILD", {
@@ -184,12 +224,49 @@ export default function Game() {
               .setDepth(UI_DEPTH),
           );
 
+          this.counterText = this.add
+            .text(400, 152, "", { fontSize: "22px", fontStyle: "bold", color: "#ffd23f", stroke: "#000000", strokeThickness: 4 })
+            .setOrigin(0.5)
+            .setScrollFactor(0)
+            .setDepth(UI_DEPTH);
+          this.registerHud(this.counterText);
+          this.updateCounter(false);
+
           registerRaraAnimations(this);
 
-          this.character = new RaraCharacter(this, 400, GROUND_Y);
+          this.character = new RaraCharacter(this, PLAYER_START_X, GROUND_Y);
           this.character.setScale(CHARACTER_SCALE);
           this.character.on("animationcomplete", () => {
             this.onAnimationComplete();
+          });
+
+          // Movement: Arcade physics moves and collides the character; the motor
+          // (lib/movement) sets its velocity from input each frame. The ground is a
+          // static solid whose top sits at the character's feet, so the character
+          // rests at exactly the same height as before. Add future platforms and
+          // obstacles to `solids` and they are collided with automatically.
+          attachCharacterBody(this, this.character, DEFAULT_MOVEMENT_CONFIG, {
+            minX: MOVE_MIN_X,
+            maxX: MOVE_MAX_X,
+            height: WORLD_HEIGHT,
+          });
+          this.physics.add.collider(this.character, solids);
+          this.motor = new CharacterMotor(
+            this.character.body as Phaser.Physics.Arcade.Body,
+            DEFAULT_MOVEMENT_CONFIG,
+            this.time.now,
+          );
+
+          // The Hunter (lib/hunter): one enemy that patrols, notices Rara, chases and can catch her.
+          // It walks on the same solids and shares the same world bounds; gameplay only, no wallet/NFT data.
+          const hunterBounds = { minX: MOVE_MIN_X, maxX: MOVE_MAX_X };
+          this.hunter = new Hunter(this, {
+            config: DEFAULT_HUNTER_CONFIG,
+            spawnX: resolveHunterSpawnX(DEFAULT_HUNTER_SPAWN, PLAYER_START_X, hunterBounds),
+            groundSurfaceY: GROUND_SURFACE_Y,
+            bounds: hunterBounds,
+            solids,
+            onEvent: (event) => this.onHunterEvent(event),
           });
 
           // Foreground mist is the nearest depth layer, so it's added last —
@@ -203,7 +280,7 @@ export default function Game() {
           this.seed = this.add.circle(SEED_X, GROUND_Y, 10, 0x9ee493);
           this.hazard = this.add.rectangle(HAZARD_X, GROUND_Y, 20, 20, 0xff4444);
 
-          this.cursors = this.input.keyboard!.createCursorKeys();
+          this.keyboardInput = createKeyboardMovementInput(this, () => this.motor.queueJump(this.time.now));
           this.input.keyboard!.on("keydown-X", () => this.swing());
 
           // Safety net for press-and-hold on-screen buttons: a pointer released
@@ -212,10 +289,17 @@ export default function Game() {
           this.input.on("pointerup", () => {
             this.leftPressed = false;
             this.rightPressed = false;
+            this.jumpButtonHeld = false;
           });
 
           this.createControls();
           this.createSkinPortrait();
+          this.caughtOverlay = createCaughtOverlay(this, UI_DEPTH + 10, () => this.restartRun());
+          for (const key of ["keydown-R", "keydown-ENTER"]) {
+            this.input.keyboard!.on(key, () => {
+              if (this.caught && !isTypingInField()) this.restartRun();
+            });
+          }
 
           // The canvas tracks the window size; re-fit the camera and HUD whenever it changes.
           this.layout();
@@ -229,6 +313,7 @@ export default function Game() {
             this.scale.off(Phaser.Scale.Events.RESIZE, this.layout, this);
             this.rain?.destroy();
             this.rain = undefined;
+            this.keyboardInput.destroy();
             skinApiRef.current = null;
           });
           this.applySkin(requestedSkinRef.current);
@@ -273,6 +358,7 @@ export default function Game() {
             else object.setScale(hudScale);
             if (object instanceof Phaser.GameObjects.Text) object.setResolution(textResolution);
           }
+          this.caughtOverlay?.layout({ width, height, hudScale, textResolution });
         }
 
         /** Skins are purely cosmetic: this never touches movement, animation state, or collisions. */
@@ -317,55 +403,114 @@ export default function Game() {
           this.portraitFrame.setVisible(visible);
         }
 
-        update() {
-          this.movedThisFrame = false;
+        update(time: number, delta: number) {
+          const keyboardX = this.keyboardInput.readDirection();
+          const left = keyboardX < 0 || this.leftPressed;
+          const right = keyboardX > 0 || this.rightPressed;
+          const moveX = left === right ? 0 : left ? -1 : 1;
+          const jumpHeld = this.keyboardInput.isJumpHeld() || this.jumpButtonHeld;
 
-          if (this.cursors.left.isDown || this.leftPressed) {
-            this.moveLeft();
-          }
+          const frame = this.motor.update({ moveX, jumpHeld }, delta, time);
+          if (moveX !== 0) this.character.setFacing(moveX);
+          if (frame.jumped) this.showJumpLabel();
+          if (!this.oneShotActive) this.syncLocomotionAnimation(frame.locomotion);
 
-          if (this.cursors.right.isDown || this.rightPressed) {
-            this.moveRight();
-          }
-
-          if (!this.movedThisFrame && !this.oneShotActive) {
-            this.setIdleIfNotMoving();
-          }
+          const target = this.hunterTarget();
+          this.hunter.update(delta, target);
+          // Rara can collect while she is free; once caught, nothing more is collected.
+          if (this.collectibles.update(time, this.caught ? null : target.rect) > 0) this.updateCounter(true);
 
           this.checkSeedCollect();
           this.checkHazard();
         }
 
-        private moveLeft() {
-          this.character.x = Math.max(MOVE_MIN_X, this.character.x - MOVE_STEP);
-          this.onMoved(-1);
+        /** "COLLECTED: n / total" in the HUD. A collect gives the text a quick pulse; a restart just resets it. */
+        private updateCounter(pulse: boolean) {
+          const { count, total } = this.collectibles;
+          this.counterText.setText(`COLLECTED: ${count} / ${total}`).setColor(count >= total ? "#9ee493" : "#ffd23f");
+          if (!pulse) return;
+          this.tweens.addCounter({
+            from: 1,
+            to: 1.3,
+            duration: 90,
+            yoyo: true,
+            onUpdate: (tween) => this.counterText.setScale(this.hudScale * tween.getValue()!),
+            onComplete: () => this.counterText.setScale(this.hudScale),
+          });
         }
 
-        private moveRight() {
-          this.character.x = Math.min(MOVE_MAX_X, this.character.x + MOVE_STEP);
-          this.onMoved(1);
+        /** Rara as the Hunter perceives her (and as pickups see her): her body centre and box. */
+        private hunterTarget(): HunterTarget {
+          const body = this.character.body as Phaser.Physics.Arcade.Body;
+          return {
+            x: body.center.x,
+            y: body.center.y,
+            rect: { left: body.left, top: body.top, right: body.right, bottom: body.bottom },
+          };
         }
 
-        private onMoved(direction: 1 | -1) {
-          this.movedThisFrame = true;
-          this.facing = direction;
-          this.character.setFacing(direction);
-          if (!this.oneShotActive) {
+        private onHunterEvent(event: HunterEvent) {
+          if (event.type === "PLAYER_CAUGHT") this.onPlayerCaught();
+        }
+
+        /** The Hunter caught Rara: lock her controls, hit feedback, a brief hit-stop, then the CAUGHT screen. */
+        private onPlayerCaught() {
+          if (this.caught) return;
+          this.caught = true;
+          this.motor.modifiers.controlsLocked = true;
+          this.oneShotActive = true;
+          this.character.setAnimationState("hit");
+          this.cameras.main.shake(320, 0.012);
+          this.cameras.main.flash(220, 255, 70, 40);
+          this.physics.pause();
+          this.time.delayedCall(CAUGHT_HITSTOP_MS, () => {
+            if (!this.alive) return;
+            this.physics.resume();
+            this.caughtOverlay.show();
+          });
+        }
+
+        /** Start over in place after a catch (no scene reload, so rain, music and the skin carry on untouched). */
+        private restartRun() {
+          if (!this.caught) return;
+          this.caught = false;
+          this.caughtOverlay.hide();
+          const body = this.character.body as Phaser.Physics.Arcade.Body;
+          body.reset(PLAYER_START_X, GROUND_Y);
+          this.motor = new CharacterMotor(body, DEFAULT_MOVEMENT_CONFIG, this.time.now); // fresh state, controls unlocked
+          this.character.setAnimationState("idle");
+          this.oneShotActive = false;
+          this.leftPressed = false;
+          this.rightPressed = false;
+          this.jumpButtonHeld = false;
+          this.seed.setPosition(SEED_X, GROUND_Y).setVisible(true);
+          this.hazardCooldownUntil = 0;
+          this.hunter.reset();
+          this.collectibles.reset();
+          this.updateCounter(false);
+        }
+
+        /**
+         * Idle / run / jump follow the motor's movement state. There is no separate
+         * fall animation: the jump animation plays once and holds its last (legs
+         * extended) frame until touchdown. Touching down while still moving goes
+         * straight to run; touching down at rest plays the landing first.
+         */
+        private syncLocomotionAnimation(locomotion: Locomotion) {
+          const state = this.character.getAnimationState();
+          if (locomotion === "air") {
+            if (state !== "jump") this.character.setAnimationState("jump");
+          } else if (locomotion === "run") {
             this.character.setAnimationState("run");
-          }
-        }
-
-        private setIdleIfNotMoving() {
-          if (this.character.getAnimationState() === "run") {
+          } else if (state === "jump") {
+            this.character.setAnimationState("land");
+          } else if (state !== "land") {
             this.character.setAnimationState("idle");
           }
         }
 
-        private jump() {
-          if (this.oneShotActive) return;
-          this.oneShotActive = true;
-          this.character.setAnimationState("jump");
-
+        /** Small "JUMP" label that floats up from the character at takeoff. */
+        private showJumpLabel() {
           const hop = this.add
             .text(this.character.x, this.character.y - 90, "JUMP", {
               fontSize: "18px",
@@ -380,17 +525,6 @@ export default function Game() {
             duration: 700,
             onComplete: () => hop.destroy(),
           });
-
-          this.tweens.add({
-            targets: this.character,
-            y: GROUND_Y - JUMP_HEIGHT,
-            duration: JUMP_DURATION,
-            yoyo: true,
-            ease: "Quad.easeOut",
-            onComplete: () => {
-              this.character.setAnimationState("land");
-            },
-          });
         }
 
         private swing() {
@@ -400,17 +534,28 @@ export default function Game() {
         }
 
         /**
-         * Unlock movement-driven state once a one-shot animation (land/collect/hit/swing)
-         * finishes. Reads the sprite's own tracked state rather than parsing the Phaser
-         * animation key, since that key's format differs between the default
-         * ("rara-<state>") and a skin ("rara-skin-<skinKey>-<state>").
+         * Unlock movement-driven animation once a one-shot (collect/hit/swing)
+         * finishes, and settle out of the landing animation. Reads the sprite's own
+         * tracked state rather than parsing the Phaser animation key, since that key's
+         * format differs between the default ("rara-<state>") and a skin
+         * ("rara-skin-<skinKey>-<state>").
          */
         private onAnimationComplete() {
           const state = this.character.getAnimationState();
-          if (state === "land" || state === "collect" || state === "hit" || state === "swing") {
-            this.oneShotActive = false;
-            this.setIdleIfNotMoving();
+          if (state === "land") {
+            this.character.setAnimationState("idle");
+          } else if (state === "collect" || state === "hit" || state === "swing") {
+            this.oneShotActive = false; // update() picks the right idle/run/jump animation next frame
           }
+        }
+
+        /** A random spot for the respawning seed, never inside or hugging an obstacle. */
+        private pickSeedX(): number {
+          for (let attempt = 0; attempt < 20; attempt++) {
+            const x = Phaser.Math.Between(MOVE_MIN_X, MOVE_MAX_X);
+            if (isClearOfObstacles(x, SEED_OBSTACLE_MARGIN, FIRST_LEVEL_OBSTACLES)) return x;
+          }
+          return SEED_X;
         }
 
         private checkSeedCollect() {
@@ -426,7 +571,7 @@ export default function Game() {
             this.character.setAnimationState("collect");
             this.seed.setVisible(false);
             this.time.delayedCall(2000, () => {
-              this.seed.setPosition(Phaser.Math.Between(MOVE_MIN_X, MOVE_MAX_X), GROUND_Y);
+              this.seed.setPosition(this.pickSeedX(), GROUND_Y);
               this.seed.setVisible(true);
             });
           }
@@ -540,8 +685,17 @@ export default function Game() {
             this.rightPressed = false;
           });
 
+          // Same press-and-hold contract as the keyboard: the press queues a jump
+          // once, holding it keeps the jump high, releasing it early cuts the jump short.
           jumpButton.on("pointerdown", () => {
-            this.jump();
+            this.jumpButtonHeld = true;
+            this.motor.queueJump(this.time.now);
+          });
+          jumpButton.on("pointerup", () => {
+            this.jumpButtonHeld = false;
+          });
+          jumpButton.on("pointerout", () => {
+            this.jumpButtonHeld = false;
           });
 
           swingButton.on("pointerdown", () => {
@@ -566,6 +720,7 @@ export default function Game() {
         // The canvas always matches its container (which fills the window).
         scale: { mode: Phaser.Scale.RESIZE, width: "100%", height: "100%" },
         parent: gameRef.current,
+        physics: { default: "arcade", arcade: { gravity: { x: 0, y: DEFAULT_MOVEMENT_CONFIG.gravity } } },
         scene: MainScene,
       });
     };

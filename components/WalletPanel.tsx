@@ -137,24 +137,37 @@ export default function WalletPanel({ activeSkin, onSelectToken }: Props) {
               {state.skins.length} owned - click one to wear it as Rara&apos;s skin
               {state.ignored > 0 && `; ${state.ignored} unrecognized token(s) ignored`}
             </div>
-            <ul className="mt-2 grid grid-cols-6 gap-2" data-testid="owned-list">
-              {state.skins.slice(0, visibleCount).map((skin) => (
-                <li key={skin.tokenId}>
-                  <button
-                    type="button"
-                    aria-label={`Use ${skin.name} as Rara's skin`}
-                    data-token-id={skin.tokenId}
-                    className={`flex w-full flex-col items-center gap-1 rounded p-1 text-xs ${
-                      activeSkin.tokenId === skin.tokenId ? "bg-emerald-700 text-white" : "bg-zinc-800 hover:bg-zinc-700"
-                    }`}
-                    onClick={blurAfter(() => onSelectToken(skin.tokenId))}
-                  >
-                    {/* eslint-disable-next-line @next/next/no-img-element -- static collection artwork; base URL may point at a CDN */}
-                    <img src={skin.imagePath} alt="" width={64} height={64} loading="lazy" decoding="async" className="h-auto w-full rounded" />
-                    #{skin.tokenId}
-                  </button>
-                </li>
-              ))}
+            <ul className="mt-2 grid grid-cols-2 gap-2" data-testid="owned-list">
+              {state.skins.slice(0, visibleCount).map((skin) => {
+                const active = activeSkin.tokenId === skin.tokenId;
+                return (
+                  <li key={skin.tokenId}>
+                    <button
+                      type="button"
+                      aria-label={`Use ${skin.name} as Rara's skin`}
+                      aria-pressed={active}
+                      data-token-id={skin.tokenId}
+                      title={`${skin.name} - ${skin.tier}, rank ${skin.rank}\n${skin.accessory} / ${skin.bodyColor} / ${skin.expression} / ${skin.background}`}
+                      className={`flex w-full items-center gap-2 rounded p-1 text-left text-xs ${
+                        active ? "bg-emerald-700 text-white" : "bg-zinc-800 hover:bg-zinc-700"
+                      }`}
+                      onClick={blurAfter(() => onSelectToken(skin.tokenId))}
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element -- static collection artwork; base URL may point at a CDN */}
+                      <img src={skin.imagePath} alt="" width={56} height={56} loading="lazy" decoding="async" className="h-14 w-14 shrink-0 rounded" />
+                      <span className="min-w-0 leading-4" data-testid="owned-card-details">
+                        <span className="block font-bold">#{skin.tokenId}</span>
+                        <span className="block">
+                          {skin.tier} - rank {skin.rank}
+                        </span>
+                        <span className="block truncate text-zinc-400">{skin.accessory}</span>
+                        <span className="block truncate text-zinc-400">{skin.bodyColor}</span>
+                        <span className="block truncate text-zinc-400">{skin.expression}</span>
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
             </ul>
             {state.skins.length > visibleCount && (
               <button type="button" className={`${button} mt-2`} onClick={blurAfter(() => setVisibleCount((n) => n + THUMBNAILS_PER_PAGE))}>

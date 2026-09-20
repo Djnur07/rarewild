@@ -58,14 +58,22 @@ export type Eip1193Like = {
   request(args: { method: string; params?: unknown[] | object }): Promise<unknown>;
 };
 
-export function createProviderTransport(provider: Eip1193Like): RpcTransport {
+export function createProviderTransport(provider: Eip1193Like, timeoutMs: number = REQUEST_TIMEOUT_MS): RpcTransport {
   return {
     async request(method, params = []) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      // A wallet that never answers must end in an error the UI can show, not an endless spinner.
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new RpcError("The wallet did not respond.")), timeoutMs);
+      });
       try {
-        return await provider.request({ method, params });
+        return await Promise.race([provider.request({ method, params }), timeout]);
       } catch (error) {
+        if (error instanceof RpcError) throw error;
         const { code, message } = error as { code?: number; message?: string };
         throw new RpcError(message || "The wallet could not complete the request.", typeof code === "number" ? code : null);
+      } finally {
+        clearTimeout(timer);
       }
     },
   };

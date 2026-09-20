@@ -13,9 +13,10 @@ type Props = {
 };
 
 /**
- * Development skin picker shown under the game canvas (outside Phaser, so it
- * never competes with gameplay input). Picks a RAREWILD token id to preview;
- * there is no wallet or ownership check yet.
+ * Development skin picker shown in the Wallet & Skins overlay (outside Phaser,
+ * so it never competes with gameplay input). Picks any RAREWILD token id to
+ * preview; it does no ownership check and is never a claim that the wallet
+ * owns the token. Owned NFTs are listed separately, in WalletPanel.
  */
 export default function SkinSelector({ activeSkin, notice, onSelect }: Props) {
   const [tokenInput, setTokenInput] = useState("");
@@ -26,7 +27,7 @@ export default function SkinSelector({ activeSkin, notice, onSelect }: Props) {
   return (
     <div className="w-full font-mono text-sm text-zinc-200" data-testid="skin-selector">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-zinc-400">Skin</span>
+        <span className="text-zinc-400" title="Preview any token; not tied to your wallet">Preview skin</span>
         <button
           type="button"
           className={buttonClass(activeSkin.isDefault)}
