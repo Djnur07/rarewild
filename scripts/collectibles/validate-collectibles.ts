@@ -9,15 +9,16 @@
 import { COLLECTIBLE_RADIUS, PICKUP_FORGIVENESS } from "../../lib/collectibles/config.ts";
 import { CollectibleTracker } from "../../lib/collectibles/CollectibleTracker.ts";
 import { FIRST_LEVEL_COLLECTIBLES as ITEMS, collectibleCenter, requiredJumpHeight } from "../../lib/collectibles/placement.ts";
-import { DEFAULT_HUNTER_CONFIG as HUNTER, DEFAULT_HUNTER_SPAWN } from "../../lib/hunter/config.ts";
-import { resolveHunterSpawnX } from "../../lib/hunter/spawn.ts";
+import { DEFAULT_HUNTER_CONFIG as HUNTER } from "../../lib/hunter/config.ts";
+import { FIRST_LEVEL_HUNTERS, patrolSpan } from "../../lib/hunter/placement.ts";
 import {
-  CHARACTER_SCALE, GROUND_SURFACE_Y, HAZARD_X, MOVE_MAX_X, MOVE_MIN_X, PLAYER_START_X, SEED_X,
+  CHARACTER_SCALE, GROUND_SURFACE_Y, HAZARD_X, MOVE_MAX_X, MOVE_MIN_X, PLAYER_START_X, SEED_X, WORLD_WIDTH,
 } from "../../lib/level/constants.ts";
 import { circleIntersectsRect, type Rect } from "../../lib/level/geometry.ts";
 import { DEFAULT_MOVEMENT_CONFIG as MOVE } from "../../lib/movement/config.ts";
 import { bodySize } from "../../lib/movement/physicsBody.ts";
-import { FIRST_LEVEL_OBSTACLES as OBSTACLES, obstacleRect } from "../../lib/obstacles/placement.ts";
+import { FIRST_LEVEL_OBSTACLES as OBSTACLES } from "../../lib/obstacles/placement.ts";
+import { obstacleRects } from "../../lib/obstacles/shapes.ts";
 
 let failures = 0;
 function check(label: string, ok: boolean, detail = "") {
@@ -37,6 +38,26 @@ const bodyAt = (x: number, lift = 0, standY = GROUND_SURFACE_Y): Rect => ({
   top: standY - lift - body.height,
   bottom: standY - lift,
 });
+const pieces = OBSTACLES.flatMap((o) => obstacleRects(o, GROUND_SURFACE_Y));
+/**
+ * The smallest jump (px above whatever she is standing on) that touches the item, over every place her body can be:
+ * beside an obstacle on the ground, or on top of it. Where the body overlaps a piece horizontally she must be above that
+ * piece's top, so that is her floor there.
+ */
+const surfaceNeed = (cx: number, cy: number) => {
+  const reach = COLLECTIBLE_RADIUS + PICKUP_FORGIVENESS + body.width / 2;
+  let best = Infinity;
+  for (let x = cx - reach; x <= cx + reach; x += 2) {
+    const under = pieces.filter((r) => r.left < x + body.width / 2 && r.right > x - body.width / 2);
+    const floor = Math.max(0, ...under.map((r) => GROUND_SURFACE_Y - r.top));
+    const itemBottom = GROUND_SURFACE_Y - cy - COLLECTIBLE_RADIUS - PICKUP_FORGIVENESS; // the lowest point of the item's reach, as a height above the ground
+    const itemTop = GROUND_SURFACE_Y - cy + COLLECTIBLE_RADIUS + PICKUP_FORGIVENESS;
+    if (floor > itemTop) continue; // the item would be inside the surface here
+    best = Math.min(best, Math.max(0, itemBottom - body.height - floor));
+  }
+  return best;
+};
+
 const newTracker = () => new CollectibleTracker(centers.map((c) => ({ id: c.spec.id, x: c.x, y: c.y })), R);
 
 // --- layout -----------------------------------------------------------------------------------------
@@ -44,32 +65,31 @@ const newTracker = () => new CollectibleTracker(centers.map((c) => ({ id: c.spec
   const ids = ITEMS.map((i) => i.id);
   check("a first level of 10-16 collectibles with unique ids", ITEMS.length >= 10 && ITEMS.length <= 16 && new Set(ids).size === ids.length, `${ITEMS.length} items`);
   check("all items are inside the playable world", ITEMS.every((i) => i.x >= MOVE_MIN_X && i.x <= MOVE_MAX_X));
-  const boxes = OBSTACLES.map((o) => obstacleRect(o, GROUND_SURFACE_Y));
-  check("no item is inside (or touching) a solid obstacle", centers.every((c) => boxes.every((b) => !circleIntersectsRect(c.x, c.y, R, b))));
+  const boxes = OBSTACLES.flatMap((o) => obstacleRects(o, GROUND_SURFACE_Y));
+  check("no item is inside (or touching) a solid obstacle piece (stack tiers and narrow pillars included)", centers.every((c) => boxes.every((b) => !circleIntersectsRect(c.x, c.y, R, b))));
   check("no item sits inside the ground", centers.every((c) => c.y + R < GROUND_SURFACE_Y));
   const xs = ITEMS.map((i) => i.x).sort((a, b) => a - b);
   check("items are spread out (at least 90px apart)", xs.every((x, i) => i === 0 || x - xs[i - 1] >= 90), `closest ${Math.min(...xs.slice(1).map((x, i) => x - xs[i]))}px`);
-  check("spread across the level (first in the start area, last near the end)", xs[0] <= PLAYER_START_X && xs.at(-1)! >= 2200);
+  check("spread across the whole journey (first in the start area, last near the far end)", xs[0] <= 700 && xs.at(-1)! >= WORLD_WIDTH * 0.85, `${xs[0]} .. ${xs.at(-1)}`);
   check("nothing on top of Rara's start, and clear of the existing seed and hazard", ITEMS.every((i) => Math.abs(i.x - PLAYER_START_X) >= 100 && Math.abs(i.x - SEED_X) >= 80 && Math.abs(i.x - HAZARD_X) >= 80));
   const tiers = { ground: 0, hop: 0, high: 0 };
   for (const i of ITEMS) tiers[i.tier]++;
   check("a mix: mostly easy, a few hops near obstacles, only a couple that need a good jump", tiers.ground >= 5 && tiers.hop >= 3 && tiers.high >= 1 && tiers.high <= 3 && tiers.ground + tiers.hop >= ITEMS.length * 0.75, JSON.stringify(tiers));
-  const hopsOk = ITEMS.filter((i) => i.tier === "hop").every((i) => OBSTACLES.some((o) => Math.abs(o.x - i.x) <= 8 && i.lift >= o.height + 60 && i.lift <= o.height + 80));
-  check("hop items float just above an obstacle (they reward jumping over it)", hopsOk);
+  const hopsOk = ITEMS.filter((i) => i.tier === "hop").every((i) => OBSTACLES.some((o) => i.x >= o.x - o.width / 2 && i.x <= o.x + o.width / 2 && i.lift >= o.height + 60 && i.lift <= o.height + 80));
+  check("hop items float just above an obstacle of any type (they reward jumping over or onto it)", hopsOk);
   const nearObstacle = ITEMS.filter((i) => OBSTACLES.some((o) => Math.abs(o.x - i.x) < 130)).length;
   check("several items sit near obstacles to encourage jumping", nearObstacle >= 4, `${nearObstacle} items`);
-  const huntSpan = { left: resolveHunterSpawnX(DEFAULT_HUNTER_SPAWN, PLAYER_START_X, { minX: MOVE_MIN_X, maxX: MOVE_MAX_X }) - HUNTER.patrolRadius, right: 0 };
-  huntSpan.right = huntSpan.left + 2 * HUNTER.patrolRadius;
-  check("there is a risk/reward item in the Hunter's area", ITEMS.some((i) => i.x >= huntSpan.left - 150 && i.x <= huntSpan.right + 150));
+  const beats = FIRST_LEVEL_HUNTERS.map((h) => patrolSpan(h, HUNTER));
+  check("every Hunter's area has a risk/reward item near it", beats.every((p) => ITEMS.some((i) => i.x >= p.left - 450 && i.x <= p.right + 450)), beats.map((p) => ITEMS.filter((i) => i.x >= p.left - 450 && i.x <= p.right + 450).length).join("/"));
 }
 
 // --- reach: every item can be collected with the real body and the real jump -----------------------------------
 {
   check("rock-height jump arc peaks near 140px (from the movement tuning)", peak > 135 && peak < 145, `${peak.toFixed(0)}px`);
   for (const c of centers) {
-    const need = requiredJumpHeight(c.spec.lift, body.height);
+    const need = surfaceNeed(c.x, c.y);
     const easy = c.spec.tier === "ground" ? need === 0 : c.spec.tier === "hop" ? need <= 40 : need >= 40 && need <= 0.8 * peak;
-    check(`${c.spec.id} (${c.spec.tier}): ${need === 0 ? "walk into it" : `needs a ${need.toFixed(0)}px jump`} - not difficult`, easy && need <= 0.8 * peak);
+    check(`${c.spec.id} (${c.spec.tier}): ${need === 0 ? "walk into it, or reach it standing on the obstacle beneath" : `needs a ${need.toFixed(0)}px jump`} - not difficult`, easy && need <= 0.8 * peak);
   }
   // The closed-form requirement really matches the geometry used by the tracker.
   const agrees = centers.every((c) => {
@@ -105,11 +125,21 @@ const newTracker = () => new CollectibleTracker(centers.map((c) => ({ id: c.spec
   check("a high item is not collected by a tiny hop", tHigh.collect(bodyAt(highItem.x, 20)).length === 0);
   check("...but is collected near the top of a full jump", tHigh.collect(bodyAt(highItem.x, 0.95 * peak)).includes(highItem.spec.id));
 
-  // Standing on an obstacle collects the hop item above it (a second way to reach it).
-  const rock = OBSTACLES.find((o) => o.id === "rock-1")!;
-  const rockTop = obstacleRect(rock, GROUND_SURFACE_Y).top;
-  const tTop = newTracker();
-  check("standing on top of an obstacle collects the item above it", tTop.collect(bodyAt(rock.x, 0, rockTop)).some((id) => id === "c03"));
+  // Every hop item can be collected from the obstacle beneath it: by standing on the highest piece under it, or, where it
+  // floats over a gap (the passage between narrow pillars), by a jump into that gap.
+  for (const item of centers.filter((c) => c.spec.tier === "hop")) {
+    const under = pieces.filter((r) => r.left <= item.x && r.right >= item.x);
+    const tracker = newTracker();
+    if (under.length > 0) {
+      const topY = Math.min(...under.map((r) => r.top));
+      check(`${item.spec.id}: standing on top of the obstacle beneath it (${(GROUND_SURFACE_Y - topY).toFixed(0)}px up) collects it`, tracker.collect(bodyAt(item.x, 0, topY)).includes(item.spec.id));
+    } else {
+      // Over a gap: from the floor of the gap itself she needs this much of a jump (she can also reach it from a pillar's edge).
+      const lift = GROUND_SURFACE_Y - item.y;
+      const slotNeed = Math.max(0, lift - COLLECTIBLE_RADIUS - PICKUP_FORGIVENESS - body.height);
+      check(`${item.spec.id}: it floats over a gap between pillars; a ${(slotNeed + 4).toFixed(0)}px jump from the gap floor collects it (or standing on a pillar's edge)`, tracker.collect(bodyAt(item.x, slotNeed + 4)).includes(item.spec.id) && surfaceNeed(item.x, item.y) <= slotNeed);
+    }
+  }
 
   // The whole level: pass each item once (jumping only where needed) and count them all.
   const all = newTracker();
@@ -132,7 +162,7 @@ const newTracker = () => new CollectibleTracker(centers.map((c) => ({ id: c.spec
   // Two items touched in one frame both count (dense layouts, wide body).
   const dense = new CollectibleTracker([{ id: "a", x: 100, y: 440 }, { id: "b", x: 120, y: 440 }, { id: "far", x: 900, y: 440 }], R);
   check("two items touched in the same frame are both collected, once each", JSON.stringify(dense.collect(bodyAt(110))) === '["a","b"]' && dense.count === 2);
-  check("deterministic: ids come back in layout order", JSON.stringify(newTracker().collect({ left: 0, right: 3000, top: 0, bottom: 600 })) === JSON.stringify(ITEMS.map((i) => i.id)));
+  check("deterministic: ids come back in layout order", JSON.stringify(newTracker().collect({ left: 0, right: WORLD_WIDTH, top: 0, bottom: 600 })) === JSON.stringify(ITEMS.map((i) => i.id)));
   // Forgiveness: an item (radius R) is collected when Rara's box comes within R + PICKUP_FORGIVENESS of its centre.
   const reach = R + PICKUP_FORGIVENESS;
   const boxEndingAt = (right: number): Rect => ({ left: right - body.width, right, top: 380, bottom: 482.5 });

@@ -35,17 +35,20 @@
  */
 
 import type Phaser from "phaser";
-import { computeDecorativePlacements } from "./computePlacements.ts";
+import { computeDecorativePlacements, type DecorativePlacements } from "./computePlacements.ts";
+import { computeZonedPlacements, SILHOUETTE_SCROLL, washAt } from "./zonePlacements.ts";
 import {
   ENVIRONMENT_ASSETS,
   GAMEPLAY_SCALE,
   GROUND_MUD_SOURCE_Y,
   WATER_EDGE_SHORE_SOURCE_Y,
 } from "./assetManifest.ts";
-import type { EnvironmentBuildOptions } from "./types.ts";
+import type { EnvironmentBuildOptions, WaterSegment } from "./types.ts";
 
-const WATER_SEGMENT_START = 680;
-const WATER_SEGMENT_END = 920;
+/** The original pool; used when the caller passes no `waterSegments`. */
+const DEFAULT_WATER_SEGMENTS: readonly WaterSegment[] = [{ start: 680, end: 920 }];
+/** Width of one strip of the zone colour wash, px. Narrow enough that the blend between zones looks smooth. */
+const WASH_STRIP_WIDTH = 48;
 
 const MIST_BACKGROUND_TOP_Y = 200;
 const MIST_FOREGROUND_OFFSET_ABOVE_GROUND = 60;
@@ -58,7 +61,7 @@ const FOLIAGE_GROUND_SINK = 30;
 
 export const SKY_SCROLL_FACTOR = 0.1;
 export const MID_BACKGROUND_SCROLL_FACTOR = 0.3;
-export const SILHOUETTE_SCROLL_FACTOR = 0.5;
+export const SILHOUETTE_SCROLL_FACTOR = SILHOUETTE_SCROLL;
 export const MIST_BACKGROUND_SCROLL_FACTOR = 0.4;
 export const GAMEPLAY_SCROLL_FACTOR = 1;
 export const MIST_FOREGROUND_SCROLL_FACTOR = 1.1;
@@ -66,16 +69,22 @@ export const MIST_FOREGROUND_SCROLL_FACTOR = 1.1;
 export class EnvironmentLayer {
   private readonly scene: Phaser.Scene;
   private readonly options: EnvironmentBuildOptions;
+  private readonly placements: DecorativePlacements;
 
   constructor(scene: Phaser.Scene, options: EnvironmentBuildOptions) {
     this.scene = scene;
     this.options = options;
+    // Zoned worlds scatter decoration by zone; without zones the original fixed composition is kept.
+    this.placements = options.zones
+      ? computeZonedPlacements(options.seed, options.zones)
+      : computeDecorativePlacements(options.seed, options.worldWidth);
 
     this.buildSky();
     this.buildDistantSilhouettes();
     this.buildMistBackground();
     this.buildGameplayGround();
     this.buildDecorative();
+    this.buildZoneWash();
   }
 
   /**
@@ -86,8 +95,11 @@ export class EnvironmentLayer {
     const { worldWidth, groundY } = this.options;
     const asset = ENVIRONMENT_ASSETS["mist-foreground"];
     const topY = groundY - MIST_FOREGROUND_OFFSET_ABOVE_GROUND;
+    // A layer with scrollFactor > 1 slides left faster than the world scrolls, so a world-wide sprite would
+    // end before the screen's right edge near the end of a long world. Widen it by the overshoot (+ a screen).
+    const coverWidth = worldWidth * MIST_FOREGROUND_SCROLL_FACTOR + 4096;
     this.scene.add
-      .tileSprite(worldWidth / 2, topY + asset.height / 2, worldWidth, asset.height, asset.key)
+      .tileSprite(coverWidth / 2, topY + asset.height / 2, coverWidth, asset.height, asset.key)
       .setScrollFactor(MIST_FOREGROUND_SCROLL_FACTOR);
   }
 
@@ -106,11 +118,10 @@ export class EnvironmentLayer {
   }
 
   private buildDistantSilhouettes() {
-    const { worldWidth, groundY, seed } = this.options;
+    const { groundY } = this.options;
     const distantGroundY = groundY - SILHOUETTE_GROUND_OFFSET;
-    const { silhouettes } = computeDecorativePlacements(seed, worldWidth);
 
-    for (const placement of silhouettes) {
+    for (const placement of this.placements.silhouettes) {
       this.scene.add
         .image(placement.x, distantGroundY, ENVIRONMENT_ASSETS[placement.key].key)
         .setOrigin(0.5, 1)
@@ -146,20 +157,20 @@ export class EnvironmentLayer {
     this.scene.add.tileSprite(worldWidth / 2, groundTopY + ground.height / 2, worldWidth, ground.height, ground.key);
 
     const water = ENVIRONMENT_ASSETS.water;
-    const waterSegmentWidth = WATER_SEGMENT_END - WATER_SEGMENT_START;
-    const waterCenterX = (WATER_SEGMENT_START + WATER_SEGMENT_END) / 2;
-    this.scene.add.tileSprite(waterCenterX, groundY + water.height / 2, waterSegmentWidth, water.height, water.key);
-
     const edge = ENVIRONMENT_ASSETS["water-edge"];
     const edgeTopY = groundY - WATER_EDGE_SHORE_SOURCE_Y * GAMEPLAY_SCALE;
     const edgeCenterY = edgeTopY + edge.height / 2;
-    this.scene.add.image(WATER_SEGMENT_START, edgeCenterY, edge.key);
-    this.scene.add.image(WATER_SEGMENT_END, edgeCenterY, edge.key).setFlipX(true);
+    for (const pool of this.options.waterSegments ?? DEFAULT_WATER_SEGMENTS) {
+      const width = pool.end - pool.start;
+      this.scene.add.tileSprite((pool.start + pool.end) / 2, groundY + water.height / 2, width, water.height, water.key);
+      this.scene.add.image(pool.start, edgeCenterY, edge.key);
+      this.scene.add.image(pool.end, edgeCenterY, edge.key).setFlipX(true);
+    }
   }
 
   private buildDecorative() {
-    const { groundY, seed, worldWidth } = this.options;
-    const { trees, roots, foliage } = computeDecorativePlacements(seed, worldWidth);
+    const { groundY } = this.options;
+    const { trees, roots, foliage } = this.placements;
 
     for (const placement of trees) {
       this.scene.add.image(placement.x, groundY + TREE_GROUND_SINK, ENVIRONMENT_ASSETS[placement.key].key).setOrigin(0.5, 1);
@@ -179,6 +190,22 @@ export class EnvironmentLayer {
           .image(placement.x, groundY + FOLIAGE_GROUND_SINK, ENVIRONMENT_ASSETS[placement.key].key)
           .setOrigin(0.5, 1);
       }
+    }
+  }
+
+  /**
+   * A soft colour grade per zone (slate in the rocky area, dark green in the deep forest, ...), drawn as
+   * narrow strips whose colour blends smoothly from one zone's centre to the next. It is created before
+   * the character, obstacles and pickups, so it grades the scenery only and never dims anything the
+   * player has to read. No-op when the world has no zones.
+   */
+  private buildZoneWash() {
+    const { zones, worldWidth, worldHeight } = this.options;
+    if (!zones || zones.length === 0) return;
+    const wash = this.scene.add.graphics();
+    for (let x = 0; x < worldWidth; x += WASH_STRIP_WIDTH) {
+      const { color, alpha } = washAt(zones, x + WASH_STRIP_WIDTH / 2);
+      wash.fillStyle(color, alpha).fillRect(x, 0, WASH_STRIP_WIDTH + 1, worldHeight);
     }
   }
 }

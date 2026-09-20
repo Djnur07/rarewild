@@ -27,9 +27,10 @@ import {
   type Locomotion,
 } from "@/lib/movement";
 import {
+  configForPlacement,
   createCaughtOverlay,
   DEFAULT_HUNTER_CONFIG,
-  DEFAULT_HUNTER_SPAWN,
+  FIRST_LEVEL_HUNTERS,
   Hunter,
   resolveHunterSpawnX,
   type CaughtOverlay,
@@ -48,8 +49,18 @@ import {
   WORLD_HEIGHT,
   WORLD_WIDTH,
 } from "@/lib/level/constants";
+import { ENVIRONMENT_ZONES, WATER_SEGMENTS, ZONE_START } from "@/lib/level/zones";
 import { createObstacles, FIRST_LEVEL_OBSTACLES, isClearOfObstacles } from "@/lib/obstacles";
 import { Collectibles } from "@/lib/collectibles";
+import {
+  createCompleteOverlay,
+  createReadyOverlay,
+  ExitGate,
+  formatTime,
+  ObjectiveState,
+  type CompleteOverlay,
+  type ReadyOverlay,
+} from "@/lib/objective";
 import { createRainEffect, type RainEffect } from "@/lib/weather/rain";
 import SkinSelector from "@/components/SkinSelector";
 import WalletPanel from "@/components/WalletPanel";
@@ -58,12 +69,16 @@ import MusicControl from "@/components/MusicControl";
 
 /** After a catch: how long the world freezes (hit-stop) before the CAUGHT screen appears, ms. */
 const CAUGHT_HITSTOP_MS = 180;
+/** After reaching the open exit: a short beat before the LEVEL COMPLETE screen, ms. */
+const COMPLETE_SCREEN_DELAY_MS = 450;
 const COLLECT_RADIUS = 40;
 /** A respawning seed keeps this far from the edges of obstacles. */
 const SEED_OBSTACLE_MARGIN = 30;
 const HIT_RADIUS = 30;
 const HAZARD_COOLDOWN_MS = 1500;
 const UI_DEPTH = 1000;
+/** While the level is complete the Hunters are shown a target that is nowhere near, so they can never touch Rara. */
+const NO_TARGET: HunterTarget = { x: -1e6, y: -1e6, rect: { left: -1e6 - 30, top: -1e6 - 50, right: -1e6 + 30, bottom: -1e6 + 50 } };
 /**
  * The HUD (title, buttons, portrait) is laid out on an 800x600 design frame.
  * The canvas fills the whole window; the camera zooms to the window height and
@@ -79,6 +94,30 @@ const PORTRAIT_MARGIN = 16;
  * the selected skin. (Numeric so the mangrove layout stays exactly as it was.)
  */
 const ENVIRONMENT_SEED = 1770772245;
+
+/** Development-only test handle (see MainScene.createTestHook). */
+type TestHook = {
+  snapshot(): {
+    phase: string;
+    elapsedMs: number;
+    startedAtMs: number | null;
+    timerText: string;
+    counterText: string;
+    exitStatusText: string;
+    collected: number;
+    total: number;
+    exitOpen: boolean;
+    rara: { x: number; y: number; vx: number; vy: number; onFloor: boolean };
+    hunters: { x: number; y: number; state: string; caught: boolean }[];
+    readyVisible: boolean;
+    caughtVisible: boolean;
+    completeVisible: boolean;
+    viewport: { width: number; height: number; zoom: number };
+  };
+  buttonRect(label: string): { x: number; y: number; width: number; height: number } | null;
+  placeRara(x: number, y: number): void;
+};
+type TestWindow = Window & { __RAREWILD_TEST__?: TestHook };
 
 /** What the Phaser scene exposes to the React shell for skin changes. */
 type SkinApi = {
@@ -156,9 +195,15 @@ export default function Game() {
         private skinRequest = 0;
         private alive = true;
         private motor!: CharacterMotor;
-        private hunter!: Hunter;
+        private hunters: Hunter[] = [];
         private caughtOverlay!: CaughtOverlay;
-        private caught = false;
+        private completeOverlay!: CompleteOverlay;
+        private readyOverlay!: ReadyOverlay;
+        /** The one source of truth for READY / PLAYING / CAUGHT / COMPLETE and the run timer. */
+        private objective!: ObjectiveState;
+        private exit!: ExitGate;
+        private timerText!: Phaser.GameObjects.Text;
+        private exitStatusText!: Phaser.GameObjects.Text;
         private collectibles!: Collectibles;
         private counterText!: Phaser.GameObjects.Text;
         private keyboardInput!: KeyboardMovementInput;
@@ -187,6 +232,8 @@ export default function Game() {
             worldHeight: WORLD_HEIGHT,
             groundY: GROUND_Y,
             seed: ENVIRONMENT_SEED,
+            zones: ENVIRONMENT_ZONES,
+            waterSegments: WATER_SEGMENTS,
           });
 
           // Purely visual weather. Created here, before the character, so its
@@ -200,6 +247,9 @@ export default function Game() {
           const solids = createSolids(this, WORLD_WIDTH, GROUND_SURFACE_Y, WORLD_HEIGHT);
           createObstacles(this, solids, GROUND_SURFACE_Y);
           this.collectibles = new Collectibles(this, { groundSurfaceY: GROUND_SURFACE_Y });
+          // The goal: collect everything (the collectible counter is the only counter), then reach the exit.
+          this.objective = new ObjectiveState(this.collectibles.total);
+          this.exit = new ExitGate(this, { groundSurfaceY: GROUND_SURFACE_Y, solids });
 
           this.registerHud(
             this.add
@@ -232,6 +282,23 @@ export default function Game() {
           this.registerHud(this.counterText);
           this.updateCounter(false);
 
+          // Second HUD row: the run timer (left of centre) and the exit's state (right of centre).
+          const rowStyle = { fontSize: "18px", fontStyle: "bold", stroke: "#000000", strokeThickness: 3 };
+          this.timerText = this.add
+            .text(388, 182, "", { ...rowStyle, color: "#cfe8d5" })
+            .setOrigin(1, 0.5)
+            .setScrollFactor(0)
+            .setDepth(UI_DEPTH);
+          this.exitStatusText = this.add
+            .text(412, 182, "", { ...rowStyle, color: "#ff8a75" })
+            .setOrigin(0, 0.5)
+            .setScrollFactor(0)
+            .setDepth(UI_DEPTH);
+          this.registerHud(this.timerText);
+          this.registerHud(this.exitStatusText);
+          this.updateTimerText();
+          this.updateExitStatus(false);
+
           registerRaraAnimations(this);
 
           this.character = new RaraCharacter(this, PLAYER_START_X, GROUND_Y);
@@ -256,18 +323,22 @@ export default function Game() {
             DEFAULT_MOVEMENT_CONFIG,
             this.time.now,
           );
+          this.motor.modifiers.controlsLocked = true; // READY: nothing moves until PLAY (see startRun)
 
-          // The Hunter (lib/hunter): one enemy that patrols, notices Rara, chases and can catch her.
-          // It walks on the same solids and shares the same world bounds; gameplay only, no wallet/NFT data.
+          // The Hunters (lib/hunter): the same enemy at each placement in lib/hunter/placement.ts (zones 3-5).
+          // They walk on the same solids and share the same world bounds; gameplay only, no wallet/NFT data.
           const hunterBounds = { minX: MOVE_MIN_X, maxX: MOVE_MAX_X };
-          this.hunter = new Hunter(this, {
-            config: DEFAULT_HUNTER_CONFIG,
-            spawnX: resolveHunterSpawnX(DEFAULT_HUNTER_SPAWN, PLAYER_START_X, hunterBounds),
-            groundSurfaceY: GROUND_SURFACE_Y,
-            bounds: hunterBounds,
-            solids,
-            onEvent: (event) => this.onHunterEvent(event),
-          });
+          this.hunters = FIRST_LEVEL_HUNTERS.map(
+            (placement) =>
+              new Hunter(this, {
+                config: configForPlacement(DEFAULT_HUNTER_CONFIG, placement),
+                spawnX: resolveHunterSpawnX({ x: placement.x, minDistanceFromPlayer: 0 }, PLAYER_START_X, hunterBounds),
+                groundSurfaceY: GROUND_SURFACE_Y,
+                bounds: hunterBounds,
+                solids,
+                onEvent: (event) => this.onHunterEvent(event),
+              }),
+          );
 
           // Foreground mist is the nearest depth layer, so it's added last —
           // after the character it should render in front of.
@@ -280,7 +351,9 @@ export default function Game() {
           this.seed = this.add.circle(SEED_X, GROUND_Y, 10, 0x9ee493);
           this.hazard = this.add.rectangle(HAZARD_X, GROUND_Y, 20, 20, 0xff4444);
 
-          this.keyboardInput = createKeyboardMovementInput(this, () => this.motor.queueJump(this.time.now));
+          this.keyboardInput = createKeyboardMovementInput(this, () => {
+            if (this.objective.phase !== "READY") this.motor.queueJump(this.time.now);
+          });
           this.input.keyboard!.on("keydown-X", () => this.swing());
 
           // Safety net for press-and-hold on-screen buttons: a pointer released
@@ -295,9 +368,15 @@ export default function Game() {
           this.createControls();
           this.createSkinPortrait();
           this.caughtOverlay = createCaughtOverlay(this, UI_DEPTH + 10, () => this.restartRun());
+          this.completeOverlay = createCompleteOverlay(this, UI_DEPTH + 10, () => this.restartRun());
+          // The game opens on the start screen: the run (and its timer) begins when PLAY is pressed.
+          this.readyOverlay = createReadyOverlay(this, UI_DEPTH + 10, () => this.startRun());
+          this.readyOverlay.show();
+          // R / Enter restart from either end screen (caught, or level complete = play again), which lands on the start screen.
           for (const key of ["keydown-R", "keydown-ENTER"]) {
             this.input.keyboard!.on(key, () => {
-              if (this.caught && !isTypingInField()) this.restartRun();
+              const { phase } = this.objective;
+              if ((phase === "CAUGHT" || phase === "COMPLETE") && !isTypingInField()) this.restartRun();
             });
           }
 
@@ -315,8 +394,63 @@ export default function Game() {
             this.rain = undefined;
             this.keyboardInput.destroy();
             skinApiRef.current = null;
+            if (process.env.NODE_ENV !== "production") delete (window as TestWindow).__RAREWILD_TEST__;
           });
           this.applySkin(requestedSkinRef.current);
+          if (process.env.NODE_ENV !== "production") (window as TestWindow).__RAREWILD_TEST__ = this.createTestHook();
+        }
+
+        /**
+         * Development-only handle for the browser tests (scripts/browser): a read-only snapshot of the
+         * scene, on-screen button positions, and a way to place Rara. Never present in a production build
+         * (`process.env.NODE_ENV` is inlined by Next, so the branch that installs it is stripped).
+         */
+        private createTestHook(): TestHook {
+          const screenCenter = (object: Phaser.GameObjects.Text) => {
+            const camera = this.cameras.main;
+            const { width, height } = this.scale;
+            const b = object.getBounds();
+            return {
+              x: width / 2 + (b.centerX - width / 2) * camera.zoom,
+              y: height / 2 + (b.centerY - height / 2) * camera.zoom,
+              width: b.width * camera.zoom,
+              height: b.height * camera.zoom,
+            };
+          };
+          return {
+            snapshot: () => {
+              const body = this.character.body as Phaser.Physics.Arcade.Body;
+              return {
+                phase: this.objective.phase,
+                elapsedMs: this.objective.elapsedMs,
+                startedAtMs: this.objective.startedAtMs,
+                timerText: this.timerText.text,
+                counterText: this.counterText.text,
+                exitStatusText: this.exitStatusText.text,
+                collected: this.collectibles.count,
+                total: this.collectibles.total,
+                exitOpen: this.exit.isOpen,
+                rara: { x: body.center.x, y: body.center.y, vx: body.velocity.x, vy: body.velocity.y, onFloor: body.onFloor() },
+                hunters: this.hunters.map((h) => ({ x: h.x, y: h.y, state: h.state, caught: h.caught })),
+                readyVisible: this.readyOverlay.visible,
+                caughtVisible: this.caughtOverlay.visible,
+                completeVisible: this.completeOverlay.visible,
+                viewport: { width: this.scale.width, height: this.scale.height, zoom: this.cameras.main.zoom },
+              };
+            },
+            // On-screen centre (page px) and size of the first visible text button starting with `label`.
+            buttonRect: (label) => {
+              const found = this.children.list.find(
+                (o): o is Phaser.GameObjects.Text => o instanceof Phaser.GameObjects.Text && o.visible && o.text.startsWith(label),
+              );
+              return found ? screenCenter(found) : null;
+            },
+            // Put the centre of Rara's collision box at (x, y).
+            placeRara: (x, y) => {
+              const body = this.character.body as Phaser.Physics.Arcade.Body;
+              body.reset(this.character.x + (x - body.center.x), this.character.y + (y - body.center.y));
+            },
+          };
         }
 
         private registerHud(object: (typeof this.hud)[number]["object"]) {
@@ -358,7 +492,10 @@ export default function Game() {
             else object.setScale(hudScale);
             if (object instanceof Phaser.GameObjects.Text) object.setResolution(textResolution);
           }
-          this.caughtOverlay?.layout({ width, height, hudScale, textResolution });
+          const view = { width, height, hudScale, textResolution, zoom };
+          this.caughtOverlay?.layout(view);
+          this.completeOverlay?.layout(view);
+          this.readyOverlay?.layout(view);
         }
 
         /** Skins are purely cosmetic: this never touches movement, animation state, or collisions. */
@@ -404,24 +541,94 @@ export default function Game() {
         }
 
         update(time: number, delta: number) {
-          const keyboardX = this.keyboardInput.readDirection();
+          // On the start screen no input reaches her: the motor is locked too, this also keeps her from turning to face a held key.
+          const ready = this.objective.phase === "READY";
+          const keyboardX = ready ? 0 : this.keyboardInput.readDirection();
           const left = keyboardX < 0 || this.leftPressed;
           const right = keyboardX > 0 || this.rightPressed;
           const moveX = left === right ? 0 : left ? -1 : 1;
-          const jumpHeld = this.keyboardInput.isJumpHeld() || this.jumpButtonHeld;
+          const jumpHeld = !ready && (this.keyboardInput.isJumpHeld() || this.jumpButtonHeld);
 
           const frame = this.motor.update({ moveX, jumpHeld }, delta, time);
           if (moveX !== 0) this.character.setFacing(moveX);
           if (frame.jumped) this.showJumpLabel();
           if (!this.oneShotActive) this.syncLocomotionAnimation(frame.locomotion);
 
-          const target = this.hunterTarget();
-          this.hunter.update(delta, target);
-          // Rara can collect while she is free; once caught, nothing more is collected.
-          if (this.collectibles.update(time, this.caught ? null : target.rect) > 0) this.updateCounter(true);
+          // The run clock counts only while PLAYING: 00:00 on the start screen, frozen on CAUGHT / COMPLETE.
+          this.objective.update(delta);
+          this.updateTimerText();
 
-          this.checkSeedCollect();
-          this.checkHazard();
+          const target = this.hunterTarget();
+          // The Hunters stay at their posts on the start screen (they are not updated, so they cannot see or chase her),
+          // and once the level is complete they no longer affect her.
+          if (!ready) for (const hunter of this.hunters) hunter.update(delta, this.objective.phase === "COMPLETE" ? NO_TARGET : target);
+          // Rara collects (and can reach the exit) only while PLAYING: not on the start screen, not once caught or complete.
+          const playing = this.objective.phase === "PLAYING";
+          if (this.collectibles.update(time, playing ? target.rect : null) > 0) this.onCollected();
+          this.exit.update(time);
+          if (playing && this.objective.phase === "PLAYING" && this.exit.touching(target.rect)) this.onExitTouched(time);
+
+          if (!ready) {
+            this.checkSeedCollect();
+            this.checkHazard();
+          }
+        }
+
+        /** The item counter changed: update the HUD, and open the exit when the last item is collected. */
+        private onCollected() {
+          this.updateCounter(true);
+          if (this.collectibles.count >= this.collectibles.total && !this.exit.isOpen) {
+            this.exit.open();
+            this.updateExitStatus(true);
+          }
+        }
+
+        /** Rara is at the exit: the objective decides. Locked -> say so; open -> the level is complete. */
+        private onExitTouched(time: number) {
+          const { count, total } = this.collectibles;
+          const result = this.objective.touchExit(count);
+          if (result === "LOCKED") this.exit.rejectTouch(count, total, time);
+          else if (result === "COMPLETE") this.onLevelComplete();
+        }
+
+        /** Everything collected and the exit reached: lock her controls, a small celebration, then the LEVEL COMPLETE screen. */
+        private onLevelComplete() {
+          this.motor.modifiers.controlsLocked = true;
+          this.leftPressed = false;
+          this.rightPressed = false;
+          this.jumpButtonHeld = false;
+          this.oneShotActive = true;
+          this.character.setAnimationState("collect");
+          this.updateTimerText();
+          this.time.delayedCall(COMPLETE_SCREEN_DELAY_MS, () => {
+            if (!this.alive || this.objective.phase !== "COMPLETE") return;
+            this.completeOverlay.show({
+              collected: this.collectibles.count,
+              total: this.collectibles.total,
+              timeText: formatTime(this.objective.elapsedMs),
+            });
+          });
+        }
+
+        /** "TIME: MM:SS" in the HUD; only touches the text when the shown second changes. */
+        private updateTimerText() {
+          const text = `TIME: ${formatTime(this.objective.elapsedMs)}`;
+          if (this.timerText.text !== text) this.timerText.setText(text);
+        }
+
+        /** "EXIT LOCKED" / "EXIT OPEN" in the HUD (a quick pulse when it opens). */
+        private updateExitStatus(pulse: boolean) {
+          const open = this.collectibles.count >= this.collectibles.total;
+          this.exitStatusText.setText(open ? "EXIT OPEN" : "EXIT LOCKED").setColor(open ? "#9ee493" : "#ff8a75");
+          if (!pulse) return;
+          this.tweens.addCounter({
+            from: 1,
+            to: 1.3,
+            duration: 110,
+            yoyo: true,
+            onUpdate: (tween) => this.exitStatusText.setScale(this.hudScale * tween.getValue()!),
+            onComplete: () => this.exitStatusText.setScale(this.hudScale),
+          });
         }
 
         /** "COLLECTED: n / total" in the HUD. A collect gives the text a quick pulse; a restart just resets it. */
@@ -455,8 +662,7 @@ export default function Game() {
 
         /** The Hunter caught Rara: lock her controls, hit feedback, a brief hit-stop, then the CAUGHT screen. */
         private onPlayerCaught() {
-          if (this.caught) return;
-          this.caught = true;
+          if (!this.objective.caught()) return; // only while PLAYING (never after completing the level)
           this.motor.modifiers.controlsLocked = true;
           this.oneShotActive = true;
           this.character.setAnimationState("hit");
@@ -466,18 +672,37 @@ export default function Game() {
           this.time.delayedCall(CAUGHT_HITSTOP_MS, () => {
             if (!this.alive) return;
             this.physics.resume();
-            this.caughtOverlay.show();
+            if (this.objective.phase === "CAUGHT") this.caughtOverlay.show();
           });
         }
 
-        /** Start over in place after a catch (no scene reload, so rain, music and the skin carry on untouched). */
+        /** PLAY was pressed: gameplay goes live and the timer starts at this moment (the objective records the scene time). */
+        private startRun() {
+          if (!this.objective.start(this.time.now)) return; // only from READY
+          this.readyOverlay.hide();
+          this.motor.modifiers.controlsLocked = false;
+          this.leftPressed = false;
+          this.rightPressed = false;
+          this.jumpButtonHeld = false;
+          this.updateTimerText();
+        }
+
+        /**
+         * Start over in place after a catch or a completed level ("RESTART" / "PLAY AGAIN"). No scene reload,
+         * so rain, music and the skin carry on untouched. Resets Rara, the Hunters, the collectibles and
+         * counter, the exit, the timer and the phase, and returns to the start screen: the new run does not
+         * begin until PLAY is pressed.
+         */
         private restartRun() {
-          if (!this.caught) return;
-          this.caught = false;
+          if (this.objective.phase !== "CAUGHT" && this.objective.phase !== "COMPLETE") return;
+          this.objective.reset();
           this.caughtOverlay.hide();
+          this.completeOverlay.hide();
+          this.readyOverlay.show();
           const body = this.character.body as Phaser.Physics.Arcade.Body;
           body.reset(PLAYER_START_X, GROUND_Y);
-          this.motor = new CharacterMotor(body, DEFAULT_MOVEMENT_CONFIG, this.time.now); // fresh state, controls unlocked
+          this.motor = new CharacterMotor(body, DEFAULT_MOVEMENT_CONFIG, this.time.now); // fresh state
+          this.motor.modifiers.controlsLocked = true; // READY: locked until PLAY
           this.character.setAnimationState("idle");
           this.oneShotActive = false;
           this.leftPressed = false;
@@ -485,9 +710,12 @@ export default function Game() {
           this.jumpButtonHeld = false;
           this.seed.setPosition(SEED_X, GROUND_Y).setVisible(true);
           this.hazardCooldownUntil = 0;
-          this.hunter.reset();
+          for (const hunter of this.hunters) hunter.reset();
           this.collectibles.reset();
+          this.exit.lock();
           this.updateCounter(false);
+          this.updateExitStatus(false);
+          this.updateTimerText();
         }
 
         /**
@@ -528,7 +756,7 @@ export default function Game() {
         }
 
         private swing() {
-          if (this.oneShotActive) return;
+          if (this.oneShotActive || this.objective.phase === "READY") return;
           this.oneShotActive = true;
           this.character.setAnimationState("swing");
         }
@@ -549,10 +777,10 @@ export default function Game() {
           }
         }
 
-        /** A random spot for the respawning seed, never inside or hugging an obstacle. */
+        /** A random spot for the respawning seed in the starting zone, never inside or hugging an obstacle. */
         private pickSeedX(): number {
           for (let attempt = 0; attempt < 20; attempt++) {
-            const x = Phaser.Math.Between(MOVE_MIN_X, MOVE_MAX_X);
+            const x = Phaser.Math.Between(MOVE_MIN_X, ZONE_START.end);
             if (isClearOfObstacles(x, SEED_OBSTACLE_MARGIN, FIRST_LEVEL_OBSTACLES)) return x;
           }
           return SEED_X;
@@ -666,7 +894,7 @@ export default function Game() {
           // it. Not "click" — a single tap without holding produces no movement
           // beyond whatever polls happen while the pointer is actually down.
           leftButton.on("pointerdown", () => {
-            this.leftPressed = true;
+            this.leftPressed = this.objective.phase !== "READY";
           });
           leftButton.on("pointerup", () => {
             this.leftPressed = false;
@@ -676,7 +904,7 @@ export default function Game() {
           });
 
           rightButton.on("pointerdown", () => {
-            this.rightPressed = true;
+            this.rightPressed = this.objective.phase !== "READY";
           });
           rightButton.on("pointerup", () => {
             this.rightPressed = false;
@@ -688,6 +916,7 @@ export default function Game() {
           // Same press-and-hold contract as the keyboard: the press queues a jump
           // once, holding it keeps the jump high, releasing it early cuts the jump short.
           jumpButton.on("pointerdown", () => {
+            if (this.objective.phase === "READY") return; // the start screen: PLAY first
             this.jumpButtonHeld = true;
             this.motor.queueJump(this.time.now);
           });

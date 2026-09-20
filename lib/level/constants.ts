@@ -6,7 +6,11 @@
 
 import { feetOffset } from "../movement/physicsBody.ts";
 
-export const WORLD_WIDTH = 2400;
+/**
+ * The whole journey, START (left) to the eventual END (right). Zone boundaries
+ * and the reserved exit area are in ./zones.ts.
+ */
+export const WORLD_WIDTH = 7600;
 export const WORLD_HEIGHT = 600;
 /** The sprite centre's height when Rara stands on the ground. */
 export const GROUND_Y = 420;

@@ -87,15 +87,10 @@ export const DEFAULT_HUNTER_CONFIG: HunterConfig = {
   showDetectionArea: true,
 };
 
-/** Where the (single, for now) Hunter starts. */
+/** A preferred Hunter spawn and how close to the player's start it may be (see spawn.ts). */
 export interface HunterSpawnConfig {
   /** Preferred horizontal spawn position, world px. */
   x: number;
   /** The Hunter is never placed closer than this to the player's start, px. */
   minDistanceFromPlayer: number;
 }
-
-export const DEFAULT_HUNTER_SPAWN: HunterSpawnConfig = {
-  x: 1500,
-  minDistanceFromPlayer: 700,
-};

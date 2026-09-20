@@ -8,7 +8,7 @@
  *   node scripts/hunter/validate-hunter.ts
  */
 
-import { DEFAULT_HUNTER_CONFIG as CFG, DEFAULT_HUNTER_SPAWN } from "../../lib/hunter/config.ts";
+import { DEFAULT_HUNTER_CONFIG as CFG, type HunterSpawnConfig } from "../../lib/hunter/config.ts";
 import { detectTarget, hasLineOfSight, rectsOverlap } from "../../lib/hunter/DetectionSystem.ts";
 import { HunterAI } from "../../lib/hunter/HunterAI.ts";
 import { resolveHunterSpawnX } from "../../lib/hunter/spawn.ts";
@@ -496,8 +496,9 @@ function scriptedRun(hz: number, seconds: number, home = HOME) {
 // --- spawn --------------------------------------------------------------------------------------------
 {
   const playerX = 400;
-  const spawn = resolveHunterSpawnX(DEFAULT_HUNTER_SPAWN, playerX, BOUNDS);
-  check("spawn: default position is far from Rara's start and inside the world", Math.abs(spawn - playerX) >= DEFAULT_HUNTER_SPAWN.minDistanceFromPlayer && spawn >= BOUNDS.minX && spawn <= BOUNDS.maxX, `x=${spawn}`);
+  const EXAMPLE_SPAWN: HunterSpawnConfig = { x: 1500, minDistanceFromPlayer: 700 };
+  const spawn = resolveHunterSpawnX(EXAMPLE_SPAWN, playerX, BOUNDS);
+  check("spawn: a preferred position is far from Rara's start and inside the world", Math.abs(spawn - playerX) >= EXAMPLE_SPAWN.minDistanceFromPlayer && spawn >= BOUNDS.minX && spawn <= BOUNDS.maxX, `x=${spawn}`);
   const pushed = resolveHunterSpawnX({ x: 450, minDistanceFromPlayer: 700 }, playerX, BOUNDS);
   check("spawn: too close to the player -> moved out to the safe distance", Math.abs(pushed - playerX) >= 700 && pushed <= BOUNDS.maxX, `x=${pushed}`);
   const clamped = resolveHunterSpawnX({ x: 99999, minDistanceFromPlayer: 700 }, playerX, BOUNDS);

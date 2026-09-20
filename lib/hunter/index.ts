@@ -2,6 +2,7 @@ export * from "./config.ts";
 export * from "./types.ts";
 export * from "./DetectionSystem.ts";
 export * from "./spawn.ts";
+export * from "./placement.ts";
 export * from "./HunterAI.ts";
 export * from "./HunterView.ts";
 export * from "./PlaceholderHunterView.ts";

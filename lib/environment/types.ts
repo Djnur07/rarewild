@@ -48,4 +48,51 @@ export interface EnvironmentBuildOptions {
   groundY: number;
   /** Deterministic seed for decorative placement (never Math.random()). */
   seed: number;
+  /**
+   * Visual zones covering the world. When given, decoration density/mix and the colour wash follow
+   * them; when omitted the original fixed 2400px composition is used.
+   */
+  zones?: readonly EnvironmentZone[];
+  /** Pools of water. Defaults to the single original pool at x 680-920. */
+  waterSegments?: readonly WaterSegment[];
+}
+
+/**
+ * How one stretch of the world looks. Every zone uses the SAME assets and the
+ * same layers; only how densely and in what mix they are scattered changes
+ * (plus a soft colour wash), so the journey reads as one world going deeper.
+ * `*Spacing` is the average distance between items in px (smaller = denser);
+ * `*Mix` weights the small/medium/large variants of that asset family.
+ */
+export interface SizeMix {
+  small: number;
+  medium: number;
+  large: number;
+}
+
+export interface ZoneVisual {
+  treeSpacing: number;
+  treeMix: SizeMix;
+  rootSpacing: number;
+  rootMix: SizeMix;
+  foliageSpacing: number;
+  foliageMix: SizeMix;
+  /** Chance (0..1) that a foliage slot is hanging vines instead of ground foliage. */
+  hangingChance: number;
+  /** Average spacing of distant silhouettes, in their own (parallax) space, px. */
+  silhouetteSpacing: number;
+  /** A soft colour grade over the scenery. Never applied to Rara, obstacles or collectibles. */
+  wash: { color: number; alpha: number };
+}
+
+export interface EnvironmentZone {
+  start: number;
+  end: number;
+  visual: ZoneVisual;
+}
+
+/** A pool of (walkable, purely decorative) water between two world x positions. */
+export interface WaterSegment {
+  start: number;
+  end: number;
 }

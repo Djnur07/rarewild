@@ -20,6 +20,8 @@ export interface OverlayLayout {
   hudScale: number;
   /** Text render resolution matching the on-screen size. */
   textResolution: number;
+  /** The camera zoom (window height / design height): on-screen size = design size * zoom * scale. */
+  zoom: number;
 }
 
 export interface CaughtOverlay {
@@ -32,22 +34,22 @@ export interface CaughtOverlay {
 
 export function createCaughtOverlay(scene: Phaser.Scene, depth: number, onRestart: () => void): CaughtOverlay {
   const panel = scene.add
-    .rectangle(400, 270, 400, 210, 0x120808, 0.82)
+    .rectangle(400, 310, 400, 210, 0x120808, 0.92)
     .setStrokeStyle(3, 0xff4a2a)
     .setScrollFactor(0)
     .setDepth(depth);
   const title = scene.add
-    .text(400, 215, "CAUGHT!", { fontSize: "56px", fontStyle: "bold", color: "#ff5a3c", stroke: "#000000", strokeThickness: 6 })
+    .text(400, 255, "CAUGHT!", { fontSize: "56px", fontStyle: "bold", color: "#ff5a3c", stroke: "#000000", strokeThickness: 6 })
     .setOrigin(0.5)
     .setScrollFactor(0)
     .setDepth(depth + 1);
   const subtitle = scene.add
-    .text(400, 270, "The Hunter got you.", { fontSize: "22px", color: "#ffd9b0" })
+    .text(400, 310, "The Hunter got you.", { fontSize: "22px", color: "#ffd9b0" })
     .setOrigin(0.5)
     .setScrollFactor(0)
     .setDepth(depth + 1);
   const button = scene.add
-    .text(400, 335, "RESTART  (R)", {
+    .text(400, 375, "RESTART  (R)", {
       fontSize: "26px",
       color: "#ffffff",
       backgroundColor: "#a3361f",
