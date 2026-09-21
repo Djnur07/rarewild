@@ -20,18 +20,26 @@ export interface CollectiblesOptions {
   groundSurfaceY: number;
   specs?: readonly CollectibleSpec[];
   createView?: CollectibleViewFactory;
+  /** Told where each item was when it was collected, so the scene can add feedback there. It cannot affect collecting. */
+  onCollect?: (item: { id: string; x: number; y: number }) => void;
 }
 
 export class Collectibles {
   private readonly tracker: CollectibleTracker;
   private readonly views = new Map<string, CollectibleView>();
+  private readonly positions = new Map<string, { x: number; y: number }>();
+  private readonly onCollect?: CollectiblesOptions["onCollect"];
 
   constructor(scene: Phaser.Scene, options: CollectiblesOptions) {
     const specs = options.specs ?? FIRST_LEVEL_COLLECTIBLES;
     const createView = options.createView ?? createPlaceholderCollectibleView;
     const items = specs.map((spec) => ({ id: spec.id, ...collectibleCenter(spec, options.groundSurfaceY) }));
     this.tracker = new CollectibleTracker(items, COLLECTIBLE_RADIUS);
-    for (const item of items) this.views.set(item.id, createView(scene, item.x, item.y, COLLECTIBLE_RADIUS));
+    this.onCollect = options.onCollect;
+    for (const item of items) {
+      this.views.set(item.id, createView(scene, item.x, item.y, COLLECTIBLE_RADIUS));
+      this.positions.set(item.id, { x: item.x, y: item.y });
+    }
   }
 
   get count(): number {
@@ -47,7 +55,11 @@ export class Collectibles {
    */
   update(timeMs: number, body: Rect | null): number {
     const fresh = body ? this.tracker.collect(body) : [];
-    for (const id of fresh) this.views.get(id)?.collect();
+    for (const id of fresh) {
+      this.views.get(id)?.collect();
+      const at = this.positions.get(id);
+      if (at) this.onCollect?.({ id, ...at });
+    }
     for (const [id, view] of this.views) if (!this.tracker.has(id)) view.update(timeMs);
     return fresh.length;
   }
@@ -61,5 +73,6 @@ export class Collectibles {
   destroy() {
     for (const view of this.views.values()) view.destroy();
     this.views.clear();
+    this.positions.clear();
   }
 }

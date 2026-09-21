@@ -3,8 +3,9 @@
  * bobs gently. Gold, small and glowing, so it cannot be mistaken for the
  * brown/grey solid obstacles, the red hazard or the plain green seed.
  *
- * Pickup feedback (cheap, all tweens on this scene): the fruit swells and
- * fades, a gold ring expands and fades, and a "+1" floats up.
+ * Pickup feedback (cheap, all tweens on this scene): a bright flash pops at the
+ * item, the fruit swells and fades, a gold ring expands and fades, and a "+1"
+ * floats up. (The sparkle burst is drawn by the scene's feedback effects.)
  */
 
 import type Phaser from "phaser";
@@ -42,6 +43,9 @@ export function createPlaceholderCollectibleView(scene: Phaser.Scene, x: number,
     },
     collect() {
       taken = true;
+      const flash = scene.add.graphics().setPosition(x, y).setDepth(DEPTH_TEXT);
+      flash.fillStyle(0xfff3b0, 0.9).fillCircle(0, 0, radius * 0.9);
+      scene.tweens.add({ targets: flash, scale: 1.8, alpha: 0, duration: 150, ease: "Quad.easeOut", onComplete: () => flash.destroy() });
       scene.tweens.add({ targets: fruit, scale: 1.8, alpha: 0, duration: 200, ease: "Quad.easeOut", onComplete: () => fruit.setVisible(false) });
 
       const ring = scene.add.graphics().setPosition(x, y).setDepth(DEPTH_TEXT);

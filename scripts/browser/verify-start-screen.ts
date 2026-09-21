@@ -18,6 +18,7 @@
 import { pathToFileURL } from "node:url";
 import { join } from "node:path";
 import { collectibleCenter, FIRST_LEVEL_COLLECTIBLES } from "../../lib/collectibles/placement.ts";
+import { dangerEdgeAlpha, dangerLevel } from "../../lib/feedback/danger.ts";
 import { FIRST_LEVEL_HUNTERS } from "../../lib/hunter/placement.ts";
 import { GROUND_SURFACE_Y, PLAYER_START_X } from "../../lib/level/constants.ts";
 import { ZONES, zoneAt } from "../../lib/level/zones.ts";
@@ -72,6 +73,7 @@ type Snapshot = {
   hunters: { x: number; y: number; state: string; caught: boolean }[];
   readyVisible: boolean; caughtVisible: boolean; completeVisible: boolean;
   viewport: { width: number; height: number; zoom: number };
+  feedback: { active: number; edgeAlpha: number; glowAlpha: number; reducedMotion: boolean; sfx: Record<string, number>; shaking: boolean; flashing: boolean; sceneObjects: number };
 };
 type Rect = { x: number; y: number; width: number; height: number };
 
@@ -573,6 +575,215 @@ try {
     if (r.id === "c05" || r.id === "c10") check(`     ...and the pressure is real: at that timing the Hunter DID notice her (alert / chase), she just did not stay to be caught`, res.noticed);
   }
   await lay.context().close();
+
+  // ============================================================================================================
+  // Player feedback and game feel: pickup, jump and landing, Hunter danger, capture, level complete, restart, reduced motion.
+  // None of it may change gameplay: the checks below read the same scene the gameplay tests read.
+  // ============================================================================================================
+  const fb = await openGame(browser, { viewport: { width: 1280, height: 720 } });
+  const fbStart = await snap(fb);
+  const fbY = fbStart.rara.y;
+  /** Stand in the first Hunter's sight (trying a few spots either side, as the level has cover between it and some of them) until it alerts. */
+  const provoke = async (page: Page, y: number) => {
+    for (const dx of [-220, 220, -150, 150, -300, 300]) {
+      await place(page, (await snap(page)).hunters[0].x + dx, y);
+      if (await until(page, (x) => x.hunters[0].state === "ALERT" || x.hunters[0].state === "CHASE", 900)) return true;
+    }
+    return false;
+  };
+  /**
+   * The danger tint frame by frame for `ms`, read inside the page (a round trip per reading is too coarse to see a 0.9s pulse).
+   * A chasing Hunter stays in CHASE for 2s after she is out of sight, and the tint only depends on its state and how far away it is,
+   * so once she is teleported far from it (well past the 420px where the cue stops growing) the level is constant: any change
+   * in the tint over that stretch is the pulse, not the Hunter moving.
+   */
+  type TintSample = { t: number; alpha: number; state: string };
+  const sampleTint = (page: Page, ms: number) =>
+    page.evaluate(
+      (duration) =>
+        new Promise<TintSample[]>((resolve) => {
+          const out: TintSample[] = [];
+          const t0 = performance.now();
+          const step = () => {
+            const snapshot = (window as any).__RAREWILD_TEST__.snapshot();
+            const t = performance.now() - t0;
+            out.push({ t, alpha: snapshot.feedback.edgeAlpha, state: snapshot.hunters[0].state });
+            if (t < duration) requestAnimationFrame(step);
+            else resolve(out);
+          };
+          requestAnimationFrame(step);
+        }),
+      ms,
+    );
+  /** The tint from `fromMs` on (after its ease-in): how many frames, whether every one of them had the Hunter chasing, and its lowest and highest value. */
+  const settledTint = (samples: TintSample[], fromMs: number) => {
+    const later = samples.filter((p) => p.t >= fromMs);
+    const alphas = later.map((p) => p.alpha);
+    return { frames: later.length, allChasing: later.every((p) => p.state === "CHASE"), min: Math.min(...alphas), max: Math.max(...alphas) };
+  };
+  /** Chase her, then get her far away while the Hunter is still chasing: the reading window above. */
+  const farChaseTint = async (page: Page, y: number, farX: number) => {
+    await until(page, (x) => x.hunters[0].state === "CHASE", 1500);
+    await place(page, farX, y);
+    return settledTint(await sampleTint(page, 1200), 400);
+  };
+  await clickButton(fb, "PLAY");
+  await until(fb, (x) => x.phase === "PLAYING", 2000);
+  await wait(fb, 1500);
+  s = await snap(fb);
+  const objectsAtRest = s.feedback.sceneObjects;
+  check("F1. at rest nothing is showing: no effect alive, no screen-edge tint, no camera shake, and no Hunter is aware of her", s.feedback.active === 0 && s.feedback.edgeAlpha === 0 && s.feedback.glowAlpha === 0 && !s.feedback.shaking && !s.feedback.flashing && s.hunters.every((h) => h.state !== "ALERT" && h.state !== "CHASE"), JSON.stringify(s.feedback));
+
+  // F2-F3. Pickup: still counts exactly once; a sparkle burst and the pickup sound; then it cleans itself up.
+  const pickups0 = s.feedback.sfx.pickup;
+  await place(fb, items[0].x, items[0].y);
+  const counted = await until(fb, (x) => x.collected === 1, 1500);
+  const burst = await until(fb, (x) => x.feedback.active > 0, 400);
+  s = await snap(fb);
+  check("F2. picking up an item counts it once (1 / 12) and plays the sparkle burst and the pickup sound", counted && burst && s.collected === 1 && s.counterText === "COLLECTED: 1 / 12" && s.feedback.sfx.pickup === pickups0 + 1, `${s.counterText}, ${s.feedback.active} particles, pickup sounds ${s.feedback.sfx.pickup - pickups0}`);
+  await wait(fb, 1500);
+  s = await snap(fb);
+  check("F3. the pickup effect cleans itself up (nothing alive, no extra scene objects) and standing on the spot does not collect it again", s.feedback.active === 0 && s.feedback.sceneObjects === objectsAtRest && s.collected === 1 && s.feedback.sfx.pickup === pickups0 + 1, `objects ${s.feedback.sceneObjects} vs ${objectsAtRest} at rest`);
+
+  // F4-F6. Jump and landing: the same jump as before, with a dust puff and a sound at each end, and no effect on movement.
+  await place(fb, fbStart.rara.x, fbY);
+  await until(fb, (x) => x.rara.onFloor, 1500);
+  await wait(fb, 600);
+  const j0 = await snap(fb);
+  await fb.keyboard.down("Space");
+  const tookOff = await until(fb, (x) => !x.rara.onFloor && x.rara.vy < -100, 800);
+  const puff = await until(fb, (x) => x.feedback.active > 0, 300);
+  const atTop = await until(fb, (x) => !x.rara.onFloor && x.rara.vy >= 0, 1500);
+  const apex = await snap(fb);
+  await fb.keyboard.up("Space");
+  const rise = fbY - apex.rara.y;
+  check("F4. jumping plays a dust puff and the jump sound, and the jump is unchanged: it still rises about 134px (125..142) holding Space", tookOff && puff && atTop && rise > 125 && rise < 142 && apex.feedback.sfx.jump === j0.feedback.sfx.jump + 1, `rose ${rise.toFixed(0)}px, jump sounds ${apex.feedback.sfx.jump - j0.feedback.sfx.jump}`);
+  const landedOk = await until(fb, (x) => x.rara.onFloor, 2500);
+  const dustDown = await until(fb, (x) => x.feedback.active > 0, 250);
+  s = await snap(fb);
+  check("F5. landing after a full jump plays a dust puff and the landing sound, and puts her back exactly where she took off", landedOk && dustDown && s.feedback.sfx.land === j0.feedback.sfx.land + 1 && Math.abs(s.rara.y - fbY) < 1.5 && Math.abs(s.rara.x - fbStart.rara.x) < 1, `land sounds ${s.feedback.sfx.land - j0.feedback.sfx.land}, y ${s.rara.y.toFixed(1)} vs ${fbY.toFixed(1)}`);
+  await wait(fb, 1200);
+  const run0 = (await snap(fb)).rara.x;
+  await fb.keyboard.down("ArrowRight");
+  await wait(fb, 400);
+  await fb.keyboard.up("ArrowRight");
+  s = await snap(fb);
+  check("F6. after the landing she moves as normal (running right covers 60px+ in 0.4s), and the jump and landing effects are gone without leaving scene objects behind", s.rara.x > run0 + 60 && s.feedback.active === 0 && s.feedback.sceneObjects === objectsAtRest, `moved ${(s.rara.x - run0).toFixed(0)}px, objects ${s.feedback.sceneObjects} vs ${objectsAtRest}`);
+
+  // F7-F9. Danger: only once a Hunter has noticed her, subtle, and it never changes what the Hunter does.
+  await place(fb, HUNTER_1_CLEAR_X - 400, fbY);
+  await wait(fb, 1200);
+  s = await snap(fb);
+  check("F7. no danger cue while no Hunter is aware of her (a Hunter 600px away: no tint, no alert)", s.feedback.edgeAlpha === 0 && s.hunters[0].state !== "ALERT" && s.hunters[0].state !== "CHASE", `${s.hunters[0].state}, tint ${s.feedback.edgeAlpha.toFixed(2)}`);
+  const danger0 = s.feedback.sfx.danger;
+  const fbReacted = await provoke(fb, fbY);
+  const tinted = await until(fb, (x) => x.feedback.edgeAlpha > 0.1, 1500);
+  s = await snap(fb);
+  check("F8. when the Hunter alerts / chases, the screen edge tints red (subtle: at most half) and the warning sound plays once", fbReacted && tinted && s.feedback.edgeAlpha <= 0.5 && s.feedback.sfx.danger === danger0 + 1, `${s.hunters[0].state}, tint ${s.feedback.edgeAlpha.toFixed(2)}, danger sounds ${s.feedback.sfx.danger - danger0}`);
+  // F8b. The control for F19: with normal motion the same far-chase tint breathes with the heartbeat, so a flat reading really does mean "steady".
+  const breathing = await farChaseTint(fb, fbY, fbStart.rara.x);
+  check("F8b. with normal motion the danger tint breathes: over 0.8s of a constant-level chase it varies by more than 0.02 (so the steadiness check in F19 can tell the difference)", breathing.frames >= 8 && breathing.allChasing && breathing.max - breathing.min > 0.02, `${breathing.min.toFixed(3)} .. ${breathing.max.toFixed(3)} over ${breathing.frames} frames`);
+  // Getting away ends it: far from the Hunter it gives up (LOST / PATROL) and the tint fades out by itself.
+  await place(fb, fbStart.rara.x, fbY);
+  const gaveUp = await until(fb, (x) => x.hunters[0].state !== "ALERT" && x.hunters[0].state !== "CHASE", 8000);
+  const faded = await until(fb, (x) => x.feedback.edgeAlpha === 0 && x.feedback.active === 0, 2500);
+  s = await snap(fb);
+  check("F9. once she has got away and the Hunter stands down, the tint fades out completely (nothing keeps pulsing)", gaveUp && faded && s.phase === "PLAYING", `${s.hunters[0].state}, tint ${s.feedback.edgeAlpha.toFixed(2)}`);
+
+  // F10-F12. Capture: the CAUGHT state and its screen are unchanged; a red pulse, a shake, and a sound mark the moment; then everything stops.
+  const capture0 = s.feedback.sfx.capture;
+  await provoke(fb, fbY);
+  await place(fb, (await snap(fb)).hunters[0].x, fbY);
+  const caughtNow = await until(fb, (x) => x.phase === "CAUGHT", 3000);
+  const c0 = await snap(fb);
+  check("F10. being caught still triggers CAUGHT, and the capture is marked: a red edge pulse, a camera shake and flash, the capture sound", caughtNow && c0.feedback.edgeAlpha > 0.3 && c0.feedback.shaking && c0.feedback.flashing && c0.feedback.sfx.capture === capture0 + 1, `pulse ${c0.feedback.edgeAlpha.toFixed(2)}, shake ${c0.feedback.shaking}, capture sounds ${c0.feedback.sfx.capture - capture0}`);
+  check("    ...and the CAUGHT screen itself still appears and offers RESTART", (await until(fb, (x) => x.caughtVisible, 1000)) && (await rectOf(fb, "RESTART")) !== null);
+  await wait(fb, 1200);
+  s = await snap(fb);
+  check("F11. the effects do not continue after CAUGHT: the pulse, the shake and the danger tint are all gone, and the timer is still stopped", s.phase === "CAUGHT" && s.feedback.active === 0 && s.feedback.edgeAlpha === 0 && !s.feedback.shaking && !s.feedback.flashing, JSON.stringify(s.feedback));
+
+  // F12. Restart while an effect is still playing clears it: a pickup, then a capture, then R at once.
+  await freshRun(fb);
+  await place(fb, items[1].x, items[1].y);
+  await until(fb, (x) => x.collected === 1, 1500);
+  await place(fb, (await snap(fb)).hunters[0].x, fbY);
+  await until(fb, (x) => x.phase === "CAUGHT", 3000);
+  const pre = await snap(fb);
+  await fb.keyboard.press("r");
+  const backToReady = await until(fb, (x) => x.phase === "READY", 1500);
+  s = await snap(fb);
+  check("F12. restarting while an effect is still playing clears it at once: no tint, no particles, no shake, no leftovers (back on the start screen, 0 / 12)", pre.feedback.edgeAlpha > 0.2 && backToReady && s.feedback.active === 0 && s.feedback.edgeAlpha === 0 && !s.feedback.shaking && !s.feedback.flashing && s.collected === 0 && s.readyVisible, `before: tint ${pre.feedback.edgeAlpha.toFixed(2)}; after: ${JSON.stringify({ a: s.feedback.active, t: s.feedback.edgeAlpha, shake: s.feedback.shaking })}`);
+  await wait(fb, 800);
+  s = await snap(fb);
+  check("    ...and they stay gone (nothing restarts by itself)", s.feedback.active === 0 && s.feedback.edgeAlpha === 0 && s.phase === "READY");
+
+  // F13-F15. Level complete: a gold glow and sparkles and a chime; LEVEL COMPLETE unchanged; everything stops; restart clears it.
+  const collectAll = async () => {
+    for (let i = 0; i < items.length; i++) {
+      await place(fb, items[i].x, items[i].y);
+      await fb.waitForFunction((n) => (window as any).__RAREWILD_TEST__.snapshot().collected >= n, i + 1, { timeout: 1500 }).catch(() => undefined);
+    }
+  };
+  await freshRun(fb);
+  await collectAll();
+  const complete0 = (await snap(fb)).feedback.sfx.complete;
+  await place(fb, EXIT_SPEC.x, fbY);
+  const finished = await until(fb, (x) => x.phase === "COMPLETE", 2500);
+  const g0 = await snap(fb);
+  check("F13. reaching the open exit still completes the level, with a gold glow, a sparkle burst and the completion sound", finished && g0.collected === 12 && g0.feedback.glowAlpha > 0.3 && g0.feedback.active > 0 && g0.feedback.sfx.complete === complete0 + 1, `glow ${g0.feedback.glowAlpha.toFixed(2)}, ${g0.feedback.active} alive, complete sounds ${g0.feedback.sfx.complete - complete0}`);
+  check("    ...and the LEVEL COMPLETE screen still appears with PLAY AGAIN", (await until(fb, (x) => x.completeVisible, 2000)) && (await rectOf(fb, "PLAY AGAIN")) !== null);
+  await wait(fb, 1600);
+  s = await snap(fb);
+  check("F14. the effects do not continue after LEVEL COMPLETE: the glow and sparkles are gone, no danger tint, the screen and the stopped timer are as before", s.phase === "COMPLETE" && s.completeVisible && s.feedback.active === 0 && s.feedback.glowAlpha === 0 && s.feedback.edgeAlpha === 0 && s.feedback.sceneObjects === objectsAtRest, `${JSON.stringify(s.feedback)} vs ${objectsAtRest} objects at rest`);
+  await fb.keyboard.press("r");
+  await until(fb, (x) => x.phase === "READY", 1500);
+  await wait(fb, 700); // the start screen fades in before its PLAY button works
+  await freshRun(fb);
+  await collectAll();
+  await place(fb, EXIT_SPEC.x, fbY);
+  const glowing = await until(fb, (x) => x.phase === "COMPLETE" && x.feedback.glowAlpha > 0.3, 2500);
+  const g1 = await snap(fb);
+  await fb.keyboard.press("r");
+  await until(fb, (x) => x.phase === "READY", 1500);
+  s = await snap(fb);
+  check("F15. restarting during the completion effect clears it at once (no glow, no sparkles), back on the start screen with the exit locked", g1.feedback.glowAlpha > 0.2 && s.phase === "READY" && s.feedback.glowAlpha === 0 && s.feedback.active === 0 && s.exitStatusText === "EXIT LOCKED" && s.readyVisible, `before: glow ${g1.feedback.glowAlpha.toFixed(2)} (${glowing ? "seen" : "not seen"}), ${g1.phase}, ${g1.collected}/12`);
+  await fb.context().close();
+
+  // F16-F19. Reduced motion (the browser's prefers-reduced-motion): no shake, no flash, no bursts or dust; state is still communicated.
+  const calm = await openGame(browser, { viewport: { width: 1280, height: 720 }, reducedMotion: "reduce" });
+  const calmStart = await snap(calm);
+  const calmY = calmStart.rara.y;
+  await clickButton(calm, "PLAY");
+  await until(calm, (x) => x.phase === "PLAYING", 2000);
+  s = await snap(calm);
+  check("F16. the game reads the reduced-motion preference", s.feedback.reducedMotion === true);
+  await place(calm, items[0].x, items[0].y);
+  await until(calm, (x) => x.collected === 1, 1500);
+  s = await snap(calm);
+  check("F17. with reduced motion a pickup still counts and sounds, but there are no sparkles", s.collected === 1 && s.feedback.active === 0 && s.feedback.sfx.pickup >= 1);
+  await place(calm, (await snap(calm)).rara.x, calmY);
+  await until(calm, (x) => x.rara.onFloor, 1500);
+  await wait(calm, 500);
+  const calmJumps = (await snap(calm)).feedback.sfx.jump;
+  await calm.keyboard.down("Space");
+  await until(calm, (x) => !x.rara.onFloor, 800);
+  await wait(calm, 120);
+  s = await snap(calm);
+  await calm.keyboard.up("Space");
+  check("F18. ...and jumping raises no dust (the jump itself is unchanged, and still sounds)", s.feedback.active === 0 && !s.rara.onFloor && s.feedback.sfx.jump === calmJumps + 1);
+  await until(calm, (x) => x.rara.onFloor, 2500);
+  const calmReacted = await provoke(calm, calmY);
+  const calmTint = await until(calm, (x) => x.feedback.edgeAlpha > 0.1, 1500);
+  // Steady: the same tint on every frame of a 0.8s chase window (the level cannot change there, see sampleTint), and it is the reduced-motion value.
+  const steady = await farChaseTint(calm, calmY, calmStart.rara.x);
+  const steadyValue = dangerEdgeAlpha(dangerLevel([{ state: "CHASE", x: 1e6, caught: false }], 0), 0, true);
+  const isSteady = steady.frames >= 8 && steady.allChasing && steady.max - steady.min < 0.002 && Math.abs(steady.min - steadyValue) < 0.01;
+  await provoke(calm, calmY); // back into its sight for the capture below
+  await place(calm, (await snap(calm)).hunters[0].x, calmY);
+  await until(calm, (x) => x.phase === "CAUGHT", 3000);
+  const cc = await snap(calm);
+  check("F19. with reduced motion the danger is still shown as a steady tint (the same value on every frame of a 0.8s chase, no pulsing), and being caught still works with the red edge pulse but no camera shake or flash", calmReacted && calmTint && isSteady && cc.phase === "CAUGHT" && cc.feedback.edgeAlpha > 0.3 && !cc.feedback.shaking && !cc.feedback.flashing && (await until(calm, (x) => x.caughtVisible, 1000)), `tint ${steady.min.toFixed(4)} .. ${steady.max.toFixed(4)} over ${steady.frames} frames, expected ${steadyValue.toFixed(3)}`);
+  await calm.context().close();
 
   check("no page errors or console errors", errors.length === 0, errors.slice(0, 3).join(" | "));
 } finally {

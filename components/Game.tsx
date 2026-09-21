@@ -62,6 +62,16 @@ import {
   type ReadyOverlay,
 } from "@/lib/objective";
 import { createRainEffect, type RainEffect } from "@/lib/weather/rain";
+import {
+  createFeedbackEffects,
+  dangerEdgeAlpha,
+  dangerLevel,
+  LandingDetector,
+  watchReducedMotion,
+  type FeedbackEffects,
+  type MotionPreference,
+} from "@/lib/feedback";
+import { getSfxStats, playSfx } from "@/lib/audio/sfx";
 import SkinSelector from "@/components/SkinSelector";
 import WalletPanel from "@/components/WalletPanel";
 import OverlayDrawer from "@/components/OverlayDrawer";
@@ -113,6 +123,18 @@ type TestHook = {
     caughtVisible: boolean;
     completeVisible: boolean;
     viewport: { width: number; height: number; zoom: number };
+    /** The feedback effects: how much is alive, the screen-edge tints, the motion preference and the sound effects requested so far. */
+    feedback: {
+      active: number;
+      edgeAlpha: number;
+      glowAlpha: number;
+      reducedMotion: boolean;
+      sfx: Record<string, number>;
+      /** The camera's shake / flash (the capture moment), and how many objects the scene holds (to spot anything piling up). */
+      shaking: boolean;
+      flashing: boolean;
+      sceneObjects: number;
+    };
   };
   buttonRect(label: string): { x: number; y: number; width: number; height: number } | null;
   placeRara(x: number, y: number): void;
@@ -183,6 +205,10 @@ export default function Game() {
         private character!: InstanceType<typeof RaraCharacter>;
         private environment!: EnvironmentLayer;
         private rain?: RainEffect;
+        /** Pickup / jump / landing / danger / capture / completion feedback (lib/feedback). Draws only; never touches gameplay. */
+        private fx!: FeedbackEffects;
+        private motion!: MotionPreference;
+        private landing = new LandingDetector();
         /** Screen-space HUD objects with the position each has on the 800x600 design frame. */
         private hud: {
           object: Phaser.GameObjects.Text | Phaser.GameObjects.Rectangle | Phaser.GameObjects.Image;
@@ -239,6 +265,8 @@ export default function Game() {
           // Purely visual weather. Created here, before the character, so its
           // background layer is drawn behind the character (see lib/weather/rain.ts).
           this.rain = createRainEffect(Phaser, this);
+          this.motion = watchReducedMotion();
+          this.fx = createFeedbackEffects(this, () => this.motion.reduced);
 
           // Solid level geometry and pickups. Created before the character so they draw behind
           // it. The obstacles are static solids: Rara and the Hunter collide with them through
@@ -246,7 +274,10 @@ export default function Game() {
           // are overlap-only (see lib/obstacles and lib/collectibles).
           const solids = createSolids(this, WORLD_WIDTH, GROUND_SURFACE_Y, WORLD_HEIGHT);
           createObstacles(this, solids, GROUND_SURFACE_Y);
-          this.collectibles = new Collectibles(this, { groundSurfaceY: GROUND_SURFACE_Y });
+          this.collectibles = new Collectibles(this, {
+            groundSurfaceY: GROUND_SURFACE_Y,
+            onCollect: ({ x, y }) => this.fx.pickup(x, y),
+          });
           // The goal: collect everything (the collectible counter is the only counter), then reach the exit.
           this.objective = new ObjectiveState(this.collectibles.total);
           this.exit = new ExitGate(this, { groundSurfaceY: GROUND_SURFACE_Y, solids });
@@ -392,6 +423,8 @@ export default function Game() {
             this.scale.off(Phaser.Scale.Events.RESIZE, this.layout, this);
             this.rain?.destroy();
             this.rain = undefined;
+            this.fx.destroy();
+            this.motion.destroy();
             this.keyboardInput.destroy();
             skinApiRef.current = null;
             if (process.env.NODE_ENV !== "production") delete (window as TestWindow).__RAREWILD_TEST__;
@@ -436,6 +469,16 @@ export default function Game() {
                 caughtVisible: this.caughtOverlay.visible,
                 completeVisible: this.completeOverlay.visible,
                 viewport: { width: this.scale.width, height: this.scale.height, zoom: this.cameras.main.zoom },
+                feedback: {
+                  active: this.fx.activeCount,
+                  edgeAlpha: this.fx.edgeAlpha,
+                  glowAlpha: this.fx.glowAlpha,
+                  reducedMotion: this.motion.reduced,
+                  sfx: { ...getSfxStats() },
+                  shaking: this.cameras.main.shakeEffect.isRunning,
+                  flashing: this.cameras.main.flashEffect.isRunning,
+                  sceneObjects: this.children.length,
+                },
               };
             },
             // On-screen centre (page px) and size of the first visible text button starting with `label`.
@@ -496,6 +539,7 @@ export default function Game() {
           this.caughtOverlay?.layout(view);
           this.completeOverlay?.layout(view);
           this.readyOverlay?.layout(view);
+          this.fx?.layout({ width, height, zoom });
         }
 
         /** Skins are purely cosmetic: this never touches movement, animation state, or collisions. */
@@ -551,7 +595,19 @@ export default function Game() {
 
           const frame = this.motor.update({ moveX, jumpHeld }, delta, time);
           if (moveX !== 0) this.character.setFacing(moveX);
-          if (frame.jumped) this.showJumpLabel();
+          if (frame.jumped) {
+            this.showJumpLabel();
+            const body = this.character.body as Phaser.Physics.Arcade.Body;
+            this.fx.jump(body.center.x, body.bottom);
+            playSfx("jump");
+          }
+          // Landing feedback only watches her body (it never changes it), and only while a run is live.
+          const landBody = this.character.body as Phaser.Physics.Arcade.Body;
+          const impact = this.landing.update(landBody.onFloor(), landBody.velocity.y);
+          if (impact > 0 && this.objective.phase === "PLAYING") {
+            this.fx.land(landBody.center.x, landBody.bottom, impact);
+            playSfx("land", { intensity: impact });
+          }
           if (!this.oneShotActive) this.syncLocomotionAnimation(frame.locomotion);
 
           // The run clock counts only while PLAYING: 00:00 on the start screen, frozen on CAUGHT / COMPLETE.
@@ -572,11 +628,16 @@ export default function Game() {
             this.checkSeedCollect();
             this.checkHazard();
           }
+
+          // Danger cue: only reads what the Hunters already report, and only while the run is live (never after CAUGHT / COMPLETE).
+          this.fx.setDanger(playing ? dangerEdgeAlpha(dangerLevel(this.hunters, target.x), time, this.motion.reduced) : 0);
+          this.fx.update(delta);
         }
 
         /** The item counter changed: update the HUD, and open the exit when the last item is collected. */
         private onCollected() {
           this.updateCounter(true);
+          playSfx("pickup", { step: this.collectibles.count });
           if (this.collectibles.count >= this.collectibles.total && !this.exit.isOpen) {
             this.exit.open();
             this.updateExitStatus(true);
@@ -600,6 +661,8 @@ export default function Game() {
           this.oneShotActive = true;
           this.character.setAnimationState("collect");
           this.updateTimerText();
+          this.fx.complete((this.exit.box.left + this.exit.box.right) / 2, (this.exit.box.top + this.exit.box.bottom) / 2);
+          playSfx("complete");
           this.time.delayedCall(COMPLETE_SCREEN_DELAY_MS, () => {
             if (!this.alive || this.objective.phase !== "COMPLETE") return;
             this.completeOverlay.show({
@@ -658,6 +721,7 @@ export default function Game() {
 
         private onHunterEvent(event: HunterEvent) {
           if (event.type === "PLAYER_CAUGHT") this.onPlayerCaught();
+          else if (event.type === "PLAYER_DETECTED" && this.objective.phase === "PLAYING") playSfx("danger");
         }
 
         /** The Hunter caught Rara: lock her controls, hit feedback, a brief hit-stop, then the CAUGHT screen. */
@@ -666,8 +730,14 @@ export default function Game() {
           this.motor.modifiers.controlsLocked = true;
           this.oneShotActive = true;
           this.character.setAnimationState("hit");
-          this.cameras.main.shake(320, 0.012);
-          this.cameras.main.flash(220, 255, 70, 40);
+          const body = this.character.body as Phaser.Physics.Arcade.Body;
+          this.fx.capture(body.center.x, body.center.y);
+          playSfx("capture");
+          // With reduced motion the shake and the flash give way to the red screen-edge pulse above.
+          if (!this.motion.reduced) {
+            this.cameras.main.shake(320, 0.012);
+            this.cameras.main.flash(220, 255, 70, 40);
+          }
           this.physics.pause();
           this.time.delayedCall(CAUGHT_HITSTOP_MS, () => {
             if (!this.alive) return;
@@ -710,6 +780,9 @@ export default function Game() {
           this.jumpButtonHeld = false;
           this.seed.setPosition(SEED_X, GROUND_Y).setVisible(true);
           this.hazardCooldownUntil = 0;
+          this.fx.clear(); // no effect outlives the run it belonged to
+          this.cameras.main.resetFX(); // ...including a capture shake / flash still playing when R is pressed
+          this.landing.reset();
           for (const hunter of this.hunters) hunter.reset();
           this.collectibles.reset();
           this.exit.lock();
