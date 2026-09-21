@@ -11,7 +11,8 @@
  * Needs `playwright-core` and a Chromium it can launch. It is not a dependency of this project:
  * install it wherever you like and point PLAYWRIGHT_CORE at its folder if it is not resolvable
  * from here (e.g. PLAYWRIGHT_CORE=~/.npm/_npx/<hash>/node_modules/playwright-core). Set
- * SCREENSHOT_DIR to keep screenshots of the start screen.
+ * CHROME_PATH to an installed Chrome/Chromium binary to use it instead of Playwright's own download,
+ * and SCREENSHOT_DIR to keep screenshots of the start screen.
  */
 
 import { pathToFileURL } from "node:url";
@@ -19,8 +20,10 @@ import { join } from "node:path";
 import { collectibleCenter, FIRST_LEVEL_COLLECTIBLES } from "../../lib/collectibles/placement.ts";
 import { FIRST_LEVEL_HUNTERS } from "../../lib/hunter/placement.ts";
 import { GROUND_SURFACE_Y, PLAYER_START_X } from "../../lib/level/constants.ts";
+import { ZONES, zoneAt } from "../../lib/level/zones.ts";
 import { EXIT_SPEC } from "../../lib/objective/placement.ts";
 import { FIRST_LEVEL_OBSTACLES } from "../../lib/obstacles/placement.ts";
+import { obstacleRects } from "../../lib/obstacles/shapes.ts";
 
 const BASE_URL = process.env.BASE_URL ?? "http://localhost:3000";
 const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR;
@@ -43,7 +46,7 @@ interface Browser {
   close(): Promise<void>;
 }
 
-async function loadPlaywright(): Promise<{ chromium: { launch(): Promise<Browser> } }> {
+async function loadPlaywright(): Promise<{ chromium: { launch(options?: Record<string, unknown>): Promise<Browser> } }> {
   const attempts = [() => import(/* webpackIgnore: true */ "playwright-core" as string), () => import(pathToFileURL(join(process.env.PLAYWRIGHT_CORE ?? "", "index.mjs")).href)];
   for (const attempt of attempts) {
     try {
@@ -118,11 +121,147 @@ async function clickButton(page: Page, label: string, how: "mouse" | "touch" = "
   else await page.mouse.click(r.x, r.y);
 }
 
+
+// --- helpers for the collectible-pattern tests: a small "player" that drives the real game with real key presses ---------------------
+const BODY_HALF_WIDTH = 22.5;
+const BODY_HEIGHT = 105;
+const SOLIDS = FIRST_LEVEL_OBSTACLES.flatMap((o) => obstacleRects(o, GROUND_SURFACE_Y));
+
+/**
+ * Steer toward `targetX` with the arrow keys until `done(snapshot)`, jumping (Space held to the top of the jump) whenever a wall
+ * that needs clearing is close ahead, exactly like the simulated player in scripts/collectibles/raidSim.ts. If she flies past the
+ * target she turns back for it, like a player would. Returns whether `done` was reached before the timeout or before the run ended.
+ */
+async function drive(page: Page, targetX: number, done: (s: Snapshot) => boolean, timeoutMs = 6000) {
+  let pressed: "ArrowRight" | "ArrowLeft" | null = null;
+  let spaceDownAt: number | null = null;
+  let launched = false;
+  let reached = false;
+  const t0 = Date.now();
+  try {
+    while (Date.now() - t0 < timeoutMs) {
+      const s = await snap(page);
+      if (done(s)) {
+        reached = true;
+        break;
+      }
+      if (s.phase !== "PLAYING") break;
+      const dx = targetX - s.rara.x;
+      const dir = Math.abs(dx) <= 6 ? 0 : Math.sign(dx);
+      const want = dir === 0 ? null : dir > 0 ? "ArrowRight" : "ArrowLeft";
+      if (want !== pressed) {
+        if (pressed) await page.keyboard.up(pressed);
+        if (want) await page.keyboard.down(want);
+        pressed = want;
+      }
+      if (spaceDownAt !== null) {
+        if (!s.rara.onFloor) launched = true;
+        // Let go at the top of the jump (or if the press never launched one), so a held Space cannot chain a second jump.
+        if ((launched && s.rara.vy >= 0) || Date.now() - spaceDownAt > 500) {
+          await page.keyboard.up("Space");
+          spaceDownAt = null;
+          launched = false;
+        }
+      } else if (s.rara.onFloor && dir !== 0) {
+        const feet = s.rara.y + 52.5;
+        const wallAhead = SOLIDS.some((w) => {
+          const gap = dir > 0 ? w.left - (s.rara.x + BODY_HALF_WIDTH) : s.rara.x - BODY_HALF_WIDTH - w.right;
+          return gap >= -2 && gap <= 70 && w.top < feet - 2 && w.bottom > feet - BODY_HEIGHT;
+        });
+        if (wallAhead) {
+          await page.keyboard.down("Space");
+          spaceDownAt = Date.now();
+        }
+      }
+    }
+  } finally {
+    if (pressed) await page.keyboard.up(pressed);
+    if (spaceDownAt !== null) await page.keyboard.up("Space");
+  }
+  return reached;
+}
+
+/** Wait until a Hunter is walking (patrolling) in `heading` with its x inside `window`: the moment to test a raid at its worst. */
+async function waitForHunter(page: Page, index: number, heading: 1 | -1, window: [number, number], timeoutMs = 25000) {
+  const t0 = Date.now();
+  let previous = (await snap(page)).hunters[index].x;
+  while (Date.now() - t0 < timeoutMs) {
+    await wait(page, 50);
+    const s = await snap(page);
+    if (s.phase !== "PLAYING") return false;
+    const h = s.hunters[index];
+    if (h.state === "PATROL" && Math.sign(h.x - previous) === heading && h.x >= window[0] && h.x <= window[1]) return true;
+    previous = h.x;
+  }
+  return false;
+}
+
+/** A restart if she was caught, then PLAY: leaves the game in a fresh PLAYING run. */
+async function freshRun(page: Page) {
+  let s = await snap(page);
+  if (s.phase === "CAUGHT" || s.phase === "COMPLETE") {
+    await wait(page, 1200); // the end screen fades in before its button works
+    await clickButton(page, s.phase === "CAUGHT" ? "RESTART" : "PLAY AGAIN");
+    await until(page, (x) => x.phase === "READY" && x.readyVisible && Math.abs(x.rara.x - 400) < 2, 3000);
+    await wait(page, 600);
+  }
+  s = await snap(page);
+  if (s.phase === "READY") {
+    await clickButton(page, "PLAY");
+    await until(page, (x) => x.phase === "PLAYING", 2000);
+  }
+}
+
+interface BrowserRaid {
+  id: string;
+  hunter: number;
+  /** Start the raid when the Hunter is walking this way (1 = right, -1 = left) inside this x window: the worst timing for the item. */
+  heading: 1 | -1;
+  window: [number, number];
+  start: number;
+  /** Where she leaves to after the grab: a spot the Hunter cannot see. */
+  leaveTo: number;
+}
+
+/** Approach from cover, grab the item, leave the way the level intends, then stand still and watch for a capture. */
+async function raid(page: Page, r: BrowserRaid, startY: number) {
+  await freshRun(page);
+  const itemX = items[FIRST_LEVEL_COLLECTIBLES.findIndex((i) => i.id === r.id)].x;
+  // Take any OTHER item on the route (or within reach of the start) first, so the counter can only rise for the item under test.
+  const lo = Math.min(r.start, itemX) - 45;
+  const hi = Math.max(r.start, itemX) + 45;
+  for (const [j, other] of items.entries()) {
+    if (FIRST_LEVEL_COLLECTIBLES[j].id === r.id || other.x < lo || other.x > hi) continue;
+    const had = (await snap(page)).collected;
+    await place(page, other.x, other.y);
+    await until(page, (x, n) => x.collected > n, 1000, had);
+  }
+  const timing = await waitForHunter(page, r.hunter, r.heading, r.window);
+  await place(page, r.start, startY);
+  await until(page, (x) => x.rara.onFloor, 1500);
+  const before = (await snap(page)).collected;
+  let noticed = false;
+  const watch = (x: Snapshot) => {
+    const h = x.hunters[r.hunter];
+    if (h.state === "ALERT" || h.state === "CHASE") noticed = true;
+    return x;
+  };
+  const got = await drive(page, itemX, (x) => watch(x).collected === before + 1, 5000);
+  const left = await drive(page, r.leaveTo, (x) => watch(x) && Math.abs(x.rara.x - r.leaveTo) <= 25 && x.rara.onFloor, 5000);
+  let caught = false;
+  for (let i = 0; i < 30; i++) {
+    await wait(page, 100);
+    const x = watch(await snap(page));
+    if (x.phase === "CAUGHT" || x.hunters[r.hunter].caught) caught = true;
+  }
+  return { timing, got, left, caught, noticed, x: (await snap(page)).rara.x };
+}
+
 const items = FIRST_LEVEL_COLLECTIBLES.map((i) => collectibleCenter(i, GROUND_SURFACE_Y));
 const HUNTER_1 = FIRST_LEVEL_HUNTERS[0];
 const HUNTER_1_CLEAR_X = HUNTER_1.x - 200; // open ground 200px in front of the first Hunter, inside its sight
 
-const browser = await chromium.launch();
+const browser = await chromium.launch(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : undefined);
 try {
   // ============================================================================================================
   // Desktop: the whole flow
@@ -256,6 +395,9 @@ try {
 
   // 11-12. RESTART goes back to READY (not into a run), the timer is 00:00.
   await clickButton(page, "RESTART");
+  // Arcade's body.reset() leaves the body centre 52px off for exactly one frame (it settles at the start on the next
+  // physics step), so let that frame pass before reading the scene. The assertions below are unchanged.
+  await until(page, (x, startX) => x.phase === "READY" && Math.abs(x.rara.x - startX) < 2, 1500, PLAYER_START_X);
   s = await snap(page);
   check("11. RESTART from CAUGHT returns to READY with the start screen", s.phase === "READY" && s.readyVisible && !s.caughtVisible);
   check("12. the timer resets to 00:00", s.timerText === "TIME: 00:00" && s.elapsedMs === 0 && s.startedAtMs === null, s.timerText);
@@ -343,6 +485,94 @@ try {
   after = await snap(mobile);
   check("    and the on-screen → button moves her after PLAY", after.rara.x > mx + 40, `x ${mx.toFixed(0)} -> ${after.rara.x.toFixed(0)}`);
   await mobile.context().close();
+
+
+  // ============================================================================================================
+  // Collectible patterns: the 12 collectibles across the six zones, the real routes to them, and the Hunter-side ones
+  // ============================================================================================================
+  const lay = await openGame(browser, { viewport: { width: 1280, height: 720 } });
+  const layY = (await snap(lay)).rara.y;
+  await clickButton(lay, "PLAY");
+  await until(lay, (x) => x.phase === "PLAYING", 2000);
+
+  // P1-P2. All 12 exist, and they are spread 2 / 2 / 2 / 2 / 3 / 1 across the zones: put Rara on each one in turn.
+  s = await snap(lay);
+  check("P1. all 12 collectibles exist: the counter starts at 0 / 12 and the scene reports 12", s.total === 12 && s.counterText === "COLLECTED: 0 / 12" && FIRST_LEVEL_COLLECTIBLES.length === 12, s.counterText);
+  const collectEveryItem = async () => {
+    const perZone = ZONES.map(() => 0);
+    let everyOneCounted = true;
+    for (let i = 0; i < items.length; i++) {
+      await place(lay, items[i].x, items[i].y);
+      const counted = await until(lay, (x, n) => x.collected === n + 1, 1500, i);
+      everyOneCounted &&= counted;
+      if (counted) perZone[ZONES.findIndex((z) => z.id === zoneAt(FIRST_LEVEL_COLLECTIBLES[i].x).id)]++;
+    }
+    return { perZone, everyOneCounted };
+  };
+  let all = await collectEveryItem();
+  check("P2. putting Rara on each collectible counts it exactly once (12 in a row), and by zone that is 2 / 2 / 2 / 2 / 3 / 1", all.everyOneCounted && all.perZone.join("/") === "2/2/2/2/3/1", all.perZone.join("/"));
+  s = await snap(lay);
+  check("P3. collecting all 12 still unlocks the exit", s.collected === 12 && s.exitOpen && s.exitStatusText === "EXIT OPEN" && s.counterText === "COLLECTED: 12 / 12", `${s.counterText}, ${s.exitStatusText}`);
+  await place(lay, EXIT_SPEC.x, layY);
+  check("P4. LEVEL COMPLETE still works after collecting all 12 (the exit completes the level)", await until(lay, (x) => x.phase === "COMPLETE" && x.completeVisible, 2500));
+  await wait(lay, 1200);
+  await clickButton(lay, "PLAY AGAIN");
+  s = await snap(lay);
+  check("P5. restart resets all 12: back to READY with 0 / 12 and the exit locked", s.phase === "READY" && s.collected === 0 && s.counterText === "COLLECTED: 0 / 12" && s.exitStatusText === "EXIT LOCKED", `${s.counterText}`);
+  await wait(lay, 600);
+  await clickButton(lay, "PLAY");
+  await until(lay, (x) => x.phase === "PLAYING", 2000);
+  all = await collectEveryItem();
+  s = await snap(lay);
+  check("    ...and every one of the 12 is back and collectible again in the new run (12 in a row, 2 / 2 / 2 / 2 / 3 / 1)", all.everyOneCounted && all.perZone.join("/") === "2/2/2/2/3/1" && s.collected === 12, all.perZone.join("/"));
+  await place(lay, EXIT_SPEC.x, layY);
+  await until(lay, (x) => x.phase === "COMPLETE" && x.completeVisible, 2500);
+  await wait(lay, 1200);
+  await freshRun(lay);
+
+  // P6. Collecting works by real movement: run at the first collectible from the start.
+  s = await snap(lay);
+  check("P6. a collectible can be collected by really running at it: c01 from Rara's start (counter 1 / 12)", (await drive(lay, items[0].x, (x) => x.collected >= 1, 4000)) && (await snap(lay)).counterText === "COLLECTED: 1 / 12", `x=${(await snap(lay)).rara.x.toFixed(0)}`);
+
+  // P7-P8. The obstacle items and the high items are reachable with real key presses and the real jump (no Hunter nearby).
+  const reach = async (id: string, startX: number) => {
+    const spec = FIRST_LEVEL_COLLECTIBLES.findIndex((i) => i.id === id);
+    await place(lay, startX, layY);
+    await until(lay, (x) => x.rara.onFloor, 1500);
+    const before = (await snap(lay)).collected;
+    const ok = await drive(lay, items[spec].x, (x) => x.collected === before + 1, 5000);
+    await until(lay, (x) => x.rara.onFloor, 2000);
+    return { ok, spec };
+  };
+  const arc2 = await reach("c02", 900);
+  const arc3 = await reach("c03", 1560);
+  check("P7. obstacle items are reachable: c02 over the stump and c03 over the log are collected by jumping the obstacle (ARC)", arc2.ok && arc3.ok, `c02 ${arc2.ok}, c03 ${arc3.ok}`);
+  const vert4 = await reach("c04", 2440);
+  check("P8. a high item is reachable: c04, high above the tall pillar, is collected by a real jump over it (VERTICAL)", vert4.ok);
+  await freshRun(lay);
+
+  // P9-P13. The Hunter-side collectibles, each at the Hunter's worst timing (it is walking toward her side of the beat and faces her):
+  // she approaches from cover, grabs the item, leaves the way the level intends, and stands still for 3 seconds. Never caught.
+  const RAIDS: BrowserRaid[] = [
+    { id: "c05", hunter: 0, heading: -1, window: [3150, 3330], start: 2760, leaveTo: 2760 },
+    { id: "c07", hunter: 1, heading: -1, window: [4450, 4620], start: 3850, leaveTo: 3850 },
+    { id: "c08", hunter: 1, heading: 1, window: [4560, 4690], start: 4800, leaveTo: 5150 },
+    { id: "c10", hunter: 2, heading: -1, window: [5780, 5900], start: 5250, leaveTo: 5250 },
+    { id: "c11", hunter: 2, heading: 1, window: [5880, 6040], start: 6120, leaveTo: 6620 },
+  ];
+  const labels: Record<string, string> = {
+    c05: "P9. Zone 3 risk item c05 (front of the first Hunter's beat): collected, and she gets away over the stump without being caught",
+    c07: "P10. Zone 4 deck item c07 (climbing the log deck in the second Hunter's sight): collected, and she drops back behind the deck uncaught",
+    c08: "P11. Zone 4 stack item c08 (high above the stack, just past the second Hunter): collected, and she gets clear behind the stack uncaught",
+    c10: "P12. Zone 5 risk item c10 (in front of the third Hunter's beat, the higher risk): collected, and she gets away over the stack uncaught",
+    c11: "P13. Zone 5 obstacle item c11 (hopping the two pillars past the third Hunter): collected, and she gets clear behind the pillars uncaught",
+  };
+  for (const r of RAIDS) {
+    const res = await raid(lay, r, layY);
+    check(labels[r.id], res.timing && res.got && res.left && !res.caught, `Hunter ${res.noticed ? "noticed her" : "never noticed her"}; collected ${res.got}, got away ${res.left}, caught ${res.caught}, ended at x=${res.x.toFixed(0)}`);
+    if (r.id === "c05" || r.id === "c10") check(`     ...and the pressure is real: at that timing the Hunter DID notice her (alert / chase), she just did not stay to be caught`, res.noticed);
+  }
+  await lay.context().close();
 
   check("no page errors or console errors", errors.length === 0, errors.slice(0, 3).join(" | "));
 } finally {

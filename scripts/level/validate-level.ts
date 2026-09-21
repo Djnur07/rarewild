@@ -103,7 +103,10 @@ const patrols = HUNTERS.map((h) => patrolSpan(h, HUNTER));
   check("none in the reserved exit area", xs.every((x) => x < EXIT_RESERVE.start));
   const near = (p: { left: number; right: number }) => ITEMS.filter((i) => i.x >= p.left - 450 && i.x <= p.right + 450).length;
   check("every Hunter has collectibles around its territory", patrols.every((p) => near(p) >= 1), patrols.map((p) => near(p)).join("/"));
-  check("the Hunter zones have both a ground item and a high risk/reward item", ITEMS.some((i) => zoneAt(i.x).id === "HUNTER" && i.tier === "ground") && ITEMS.some((i) => zoneAt(i.x).id === "HUNTER" && i.tier === "high"));
+  check("the Hunter Territory pairs a safe item (past the Hunter) with a risk/reward one (at the front door of its beat)", ITEMS.some((i) => zoneAt(i.x).id === "HUNTER" && i.pattern === "GUIDE" && i.x > patrols[0].right) && ITEMS.some((i) => zoneAt(i.x).id === "HUNTER" && i.pattern === "RISK_REWARD" && i.x < patrols[0].left));
+  check("no collectible sits inside a Hunter's patrol beat (60px clear on both sides): nothing is placed where Rara would land on a Hunter", ITEMS.every((i) => patrols.every((p) => i.x <= p.left - 60 || i.x >= p.right + 60)));
+  const plan = ZONES.map((z) => ITEMS.filter((i) => zoneAt(i.x).id === z.id).map((i) => i.pattern).sort().join("+"));
+  check("each zone's collectibles follow its lesson: START guide+arc, ROCKY arc+vertical, HUNTER guide+risk, DEEP FOREST route+vertical, DANGEROUS guide+risk+route, FINAL guide", plan.join(" | ") === ["ARC+GUIDE", "ARC+VERTICAL", "GUIDE+RISK_REWARD", "OBSTACLE_ROUTE+VERTICAL", "GUIDE+OBSTACLE_ROUTE+RISK_REWARD", "GUIDE"].join(" | "), plan.join(" | "));
 }
 
 // --- No big empty stretches ---------------------------------------------------------------------------------------------
