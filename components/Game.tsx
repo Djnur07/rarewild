@@ -111,6 +111,8 @@ const DESIGN_WIDTH = 800;
 const DESIGN_HEIGHT = WORLD_HEIGHT;
 const PORTRAIT_SIZE = 88;
 const PORTRAIT_MARGIN = 16;
+/** Mobile landscape only: how far below SAVE THE MANGROVE's row the timer sits, CSS px (position only — its own row alignment is otherwise unchanged). */
+const LANDSCAPE_TIMER_DROP_PX = 8;
 
 /**
  * Fixed level/world seed for decorative environment placement — independent of
@@ -736,7 +738,9 @@ export default function Game() {
             // disproportionately once cssZoom is not 1, since the whole 800x600 frame is scaled around its centre as one block;
             // it only ever looked right before because nothing else was ever moved this far from that centre.
             const targetLeftCss = controlSideMargin(width);
-            this.timerText.setOrigin(0, 0.5).setPosition(cx + (targetLeftCss - width / 2) / cssZoom, cy + (subtitleDesign.y - DESIGN_HEIGHT / 2) * compensate);
+            this.timerText
+              .setOrigin(0, 0.5)
+              .setPosition(cx + (targetLeftCss - width / 2) / cssZoom, cy + (subtitleDesign.y - DESIGN_HEIGHT / 2) * compensate + LANDSCAPE_TIMER_DROP_PX / cssZoom);
           } else {
             this.timerText.setOrigin(1, 0.5).setPosition(cx + (timerDesign.x - DESIGN_WIDTH / 2) * hudScale, cy + (timerDesign.y - DESIGN_HEIGHT / 2) * compensate);
           }

@@ -81,7 +81,8 @@ const results = PHONES.map(([width, height]) => {
   bad("comfortable spacing: at least 8px between neighbouring buttons (the same in one row or between the two landscape groups, since a group's own gap is always kept at least that, and the gap between the groups is much larger still)", (r) => r.rects.every((x, i) => i === 0 || x.left - r.rects[i - 1].right >= 8));
   bad("thumb-sized touch targets: every button answers touches over at least 48px of height", (r) => r.placed.every((p, i) => (DESIGN[i].height + 2 * p.hitPadY) * p.scale >= MIN_TOUCH_TARGET_PX - 0.01));
   bad("the drawn buttons are at least 36px tall (and the two arrows 40px) on every screen whose short side is 360px or more; smaller screens are smaller, but their touch targets are still 48px", (r) => Math.min(r.width, r.height) < 360 || (r.rects.every((x) => x.bottom - x.top >= 36) && r.rects.slice(0, 2).every((x) => x.bottom - x.top >= 40 - 0.01)));
-  bad("nothing runs into the volume control in the bottom-right corner (whose size depends on the screen height)", (r) => {
+  bad("portrait: nothing runs into the volume control in the bottom-right corner (whose size depends on the screen height; in landscape the control moves to the top-left instead, see MusicControl.tsx, so there is no bottom-right obstacle there any more)", (r) => {
+    if (r.width > r.height) return true;
     const footprint = musicControlFootprint(r.height);
     const box = { left: r.width - footprint.width, top: r.height - footprint.height };
     return r.rects.every((x) => x.right <= box.left || x.bottom <= box.top);
@@ -111,17 +112,10 @@ const results = PHONES.map(([width, height]) => {
     return S.left - R.right >= 3 * ownGap;
   });
   badIn(landscape, "landscape: LEFT+RIGHT keeps the standard comfortable left margin", (r) => r.rects[0].left >= controlSideMargin(r.width) - 0.5);
-  // SWING+JUMP asks for about half that margin (still comfortable: 8px or 3% of the width) instead, to sit closer to the right
-  // edge — UNLESS, at these button sizes, the row's own bottom edge already reaches into the volume control's corner (true at
-  // every real phone size tried: the row is simply tall enough to sit low there, regardless of its horizontal position), in
-  // which case it correctly falls back to that control's own width of clearance instead. Never anything besides those two.
-  badIn(landscape, "landscape: SWING+JUMP's right margin is exactly the reduced ~half-margin where that is safe, or exactly the volume control's own clearance where it is not - never anything smaller or in between", (r) => {
-    const rightMargin = r.width - r.rects[3].right;
-    const reduced = Math.max(8, 0.03 * r.width);
-    const footprint = musicControlFootprint(r.height);
-    const protectedMargin = Math.max(reduced, footprint.width + 8);
-    return Math.abs(rightMargin - reduced) < 0.5 || Math.abs(rightMargin - protectedMargin) < 0.5;
-  });
+  // SWING+JUMP gets that same standard margin on the right (not the larger volume-clearance margin it used to need): the
+  // volume control moves to the top-left corner in landscape (see MusicControl.tsx), so there is no bottom-right obstacle
+  // here to keep clear of any more, unlike the single centred row above (still relevant to portrait).
+  badIn(landscape, "landscape: SWING+JUMP keeps the same standard comfortable right margin as LEFT+RIGHT's left margin", (r) => Math.abs(r.width - r.rects[3].right - controlSideMargin(r.width)) < 0.5);
   // Safety comes first: the row never sits any lower (further down) than a single centred row would, and moves up from there
   // only as far as the ground-line clamp allows. At today's button sizes that clamp already pins the row as high as it can
   // safely go at every real phone size tested (checked in verify-start-screen.ts's real, screenshot-backed P9), so the lift

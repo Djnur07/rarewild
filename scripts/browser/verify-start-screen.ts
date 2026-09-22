@@ -20,7 +20,7 @@ import { join } from "node:path";
 import { collectibleCenter, FIRST_LEVEL_COLLECTIBLES } from "../../lib/collectibles/placement.ts";
 import { dangerEdgeAlpha, dangerLevel } from "../../lib/feedback/danger.ts";
 import { sfxLevel } from "../../lib/audio/sfx.ts";
-import { singleRowLayout, musicControlFootprint, controlSideMargin, MOBILE_CAMERA_ZOOM_FACTOR, type DesignButton } from "../../lib/mobile/layout.ts";
+import { singleRowLayout, controlSideMargin, MOBILE_CAMERA_ZOOM_FACTOR, type DesignButton } from "../../lib/mobile/layout.ts";
 import { FIRST_LEVEL_HUNTERS } from "../../lib/hunter/placement.ts";
 import { GROUND_SURFACE_Y, PLAYER_START_X } from "../../lib/level/constants.ts";
 import { ZONES, zoneAt } from "../../lib/level/zones.ts";
@@ -919,13 +919,10 @@ try {
       const singleRow = singleRowY(w, h);
       if (rect["←"].y > singleRow + 0.5) note("lifted", `${size} (${rect["←"].y.toFixed(1)} vs single-row ${singleRow.toFixed(1)})`);
       if (left < 14 - 0.5 || left < 0.06 * w - 1) note("margins", size);
-      // SWING/JUMP's own right margin is either the reduced ~half-margin (when the row's own bottom edge already clears the
-      // volume control's corner) or exactly that control's own clearance (when, at these button sizes, it does not) - never
-      // anything smaller, and never anything in between.
-      const reducedMargin = Math.max(8, 0.03 * w);
-      const footprint = musicControlFootprint(h);
-      const protectedMargin = Math.max(reducedMargin, footprint.width + 8);
-      if (!(Math.abs(rightMarginPx - reducedMargin) < 1 || Math.abs(rightMarginPx - protectedMargin) < 1)) note("margins", size);
+      // SWING/JUMP's own right margin is now the same standard comfortable margin LEFT+RIGHT's left margin uses: the volume
+      // control moves to the top-left corner in landscape (see MusicControl.tsx), so there is no bottom-right obstacle here
+      // to keep clear of any more.
+      if (Math.abs(rightMarginPx - controlSideMargin(w)) > 1) note("margins", size);
     } else {
       if (Math.abs((rect["SWING"].x - rect["→"].x) / gap - 140 / 110) > 0.02) note("spacing", size);
       if (Math.abs(left - rightMarginPx) > 1) note("centred", size);
@@ -971,10 +968,12 @@ try {
     if (Math.abs(rect["RAREWILD"].x - before["RAREWILD"][0]) > 0.5 || Math.abs(rect["RAREWILD"].height - before["RAREWILD"][3]) > 0.1) note("title unchanged", size);
     if (["SAVE THE MANGROVE", "COLLECTED"].some((l) => Math.abs(rect[l].x - before[l][0]) > 0.5 || Math.abs(rect[l].y - before[l][1]) > 0.5)) note("HUD positions kept", size);
     if (w > h) {
-      // Landscape: the timer shares the subtitle's row (same y) and sits near the left edge (the standard comfortable margin),
-      // to the left of "SAVE THE MANGROVE" (which itself has not moved, checked above), instead of pairing with the exit status.
+      // Landscape: the timer sits near the subtitle's row (LANDSCAPE_TIMER_DROP_PX = 8 CSS px below it, see Game.tsx) and near
+      // the left edge (the standard comfortable margin), to the left of "SAVE THE MANGROVE" (which itself has not moved,
+      // checked above), instead of pairing with the exit status.
+      const LANDSCAPE_TIMER_DROP_PX = 8;
       const timerLeft = edges(rect["TIME:"]).left;
-      if (Math.abs(rect["TIME:"].y - rect["SAVE THE MANGROVE"].y) > 0.5) note("timer row", size);
+      if (Math.abs(rect["TIME:"].y - (rect["SAVE THE MANGROVE"].y + LANDSCAPE_TIMER_DROP_PX)) > 0.5) note("timer row", size);
       if (Math.abs(timerLeft - controlSideMargin(w)) > 1) note("timer left edge", size);
       if (edges(rect["TIME:"]).right >= rect["SAVE THE MANGROVE"].x - rect["SAVE THE MANGROVE"].width / 2) note("timer left of subtitle", size);
     } else if (Math.abs(edges(rect["TIME:"]).right - (before["TIME:"][0] + before["TIME:"][2] / 2)) > 0.7) note("timer anchor kept", size);
@@ -1002,7 +1001,7 @@ try {
   layoutCheck("P3. ...and the buttons are LARGER than before (1.35x+ on portrait phones, 1.3x+ on landscape phones 700px+ wide, 1.1x+ on the smallest)", ["larger buttons"]);
   layoutCheck("P8. in landscape, LEFT+RIGHT and SWING+JUMP form two clearly separated groups: the gap between them is at least 3x either group's own internal spacing", ["group gap"]);
   layoutCheck("P9. in landscape, both groups sit at or above where a single centred row would rest today at that height (lifted when there is room; never pushed lower than that safety-clamped reference where there is not)", ["lifted"]);
-  layoutCheck("P10. in landscape, the timer shares SAVE THE MANGROVE's row (same height) and sits to its left, near the left edge, instead of pairing with the exit status", ["timer row", "timer left edge", "timer left of subtitle"]);
+  layoutCheck("P10. in landscape, the timer sits just below SAVE THE MANGROVE's row and to its left, near the left edge, instead of pairing with the exit status", ["timer row", "timer left edge", "timer left of subtitle"]);
   layoutCheck("P11. the volume control moves to the top-left corner in landscape only (clear of the timer there); portrait keeps it bottom-right", ["volume top-left", "volume clear of timer", "volume bottom-right"]);
   layoutCheck("C1. phone camera: the zoom is exactly 1x the window-height zoom (matches desktop's framing) at all six phone sizes, and desktop's own zoom is untouched (D1)", ["camera zoom"]);
   layoutCheck("C4. no empty band: at the two landscape phone sizes in this set (the ones a player actually plays on, now that portrait shows the rotate overlay) the bottom edge of the screen is brown soil, never the dark-green void or black", ["no empty band"]);

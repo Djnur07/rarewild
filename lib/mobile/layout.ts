@@ -182,19 +182,15 @@ export function layoutTouchControls(view: ControlView, buttons: readonly DesignB
 
   const tallest = Math.max(...buttons.map((b) => b.height));
   const stripTop = view.height / 2 + (view.groundDesignY - view.designHeight / 2) * view.zoom + 2;
-  const footprint = musicControlFootprint(view.height);
-  const overlayTop = view.height - footprint.height - OVERLAY_GAP;
   const halfHeight = (tallest * scale) / 2;
   const liftedY = Math.max(stripTop + halfHeight, rowCentre - LANDSCAPE_LIFT);
-  // Each group gets its OWN margin, not the (possibly larger) `margin` the single-group sizing above may have picked: the left
-  // group is never near the volume control, so it always uses the small standard margin, leaving as much of the freed-up width
-  // as possible for the gap between the groups. SWING/JUMP sit closer still — half that margin (still a comfortable, floored
-  // minimum) — UNLESS, at its lifted height, the group would still reach down beside the volume control, in which case it
-  // gets that control's own width of clearance instead (never both margins large at once just because the single centred row
-  // once needed it for a different reason).
+  // Both groups get the same standard edge margin, not the (possibly larger) `margin` the single-group sizing above may have
+  // picked: neither group is near the volume control any more (it moves to the top-left corner in landscape, see
+  // MusicControl.tsx, unlike the single centred row above, which stays relevant to portrait where the control is still
+  // bottom-right), so both are free to sit at the ordinary comfortable minimum, leaving as much of the freed-up width as
+  // possible for the gap between them.
   const smallMargin = controlSideMargin(view.width);
-  const rightBaseMargin = Math.max(8, 0.03 * view.width);
-  const rightMargin = liftedY + halfHeight <= overlayTop ? rightBaseMargin : Math.max(rightBaseMargin, footprint.width + OVERLAY_GAP);
+  const rightMargin = smallMargin;
 
   const groupBounds = (subset: readonly DesignButton[]) => ({
     left: Math.min(...subset.map((b) => b.x - b.width / 2)),
