@@ -13,9 +13,13 @@
 import type Phaser from "phaser";
 import { ENVIRONMENT_ASSETS, ENVIRONMENT_ASSET_KEYS } from "./assetManifest.ts";
 
-export function preloadEnvironmentAssets(scene: Phaser.Scene) {
+/**
+ * `textureScale` (default 1) rasterises every SVG that many times larger than its game size, for a screen that shows
+ * the world magnified (a phone: see lib/render/quality.ts). EnvironmentLayer scales the results back down.
+ */
+export function preloadEnvironmentAssets(scene: Phaser.Scene, textureScale = 1) {
   for (const key of ENVIRONMENT_ASSET_KEYS) {
     const asset = ENVIRONMENT_ASSETS[key];
-    scene.load.svg(asset.key, asset.path, { width: asset.width, height: asset.height });
+    scene.load.svg(asset.key, asset.path, { width: asset.width * textureScale, height: asset.height * textureScale });
   }
 }

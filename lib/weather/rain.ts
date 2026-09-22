@@ -99,9 +99,12 @@ const MIN_RATE_WIDTH = 640;
 const EDGE_MARGIN = 80;
 
 /** Draw one soft streak: transparent tail fading up to the brightest point at the head (bottom). */
-function createStreakTexture(scene: Phaser.Scene, spec: RainLayerSpec) {
-  const { textureKey, texture } = spec;
+function createStreakTexture(scene: Phaser.Scene, spec: RainLayerSpec, k: number) {
+  const { textureKey } = spec;
   if (scene.textures.exists(textureKey)) return;
+  // The streak is drawn k times larger than its 1x design (k = 1 unless it is a phone; see lib/render/quality.ts), so
+  // when the camera magnifies it the lines are still crisp; the particles are scaled back down by 1/k below.
+  const texture = { ...spec.texture, width: spec.texture.width * k, height: spec.texture.height * k, lineWidth: spec.texture.lineWidth * k };
   const canvasTexture = scene.textures.createCanvas(textureKey, texture.width, texture.height);
   if (!canvasTexture) return;
   const context = canvasTexture.getContext();
@@ -118,14 +121,15 @@ function createStreakTexture(scene: Phaser.Scene, spec: RainLayerSpec) {
   context.fillStyle = gradient;
   // Wider, fainter passes first, the crisp core last: a soft edge without ctx.filter (unsupported in Safari).
   for (let pass = texture.softEdges; pass >= 1; pass--) {
-    const width = texture.lineWidth + (pass - 1) * 1.6;
+    const width = texture.lineWidth + (pass - 1) * 1.6 * k;
     context.globalAlpha = pass === 1 ? 1 : 0.35 / pass;
     context.fillRect((texture.width - width) / 2, 0, width, texture.height);
   }
   canvasTexture.refresh();
 }
 
-export function createRainEffect(PhaserNS: typeof Phaser, scene: Phaser.Scene): RainEffect {
+export function createRainEffect(PhaserNS: typeof Phaser, scene: Phaser.Scene, options: { textureScale?: number } = {}): RainEffect {
+  const k = options.textureScale ?? 1;
   type Layer = {
     spec: RainLayerSpec;
     emitter: Phaser.GameObjects.Particles.ParticleEmitter;
@@ -135,7 +139,7 @@ export function createRainEffect(PhaserNS: typeof Phaser, scene: Phaser.Scene): 
   };
 
   const layers: Layer[] = LAYERS.map((spec) => {
-    createStreakTexture(scene, spec);
+    createStreakTexture(scene, spec, k);
     const zone = new PhaserNS.Geom.Rectangle(0, 0, 1, 1);
     const lean = spec.leanDegrees;
     const slope = Math.tan(PhaserNS.Math.DegToRad(lean));
@@ -157,7 +161,8 @@ export function createRainEffect(PhaserNS: typeof Phaser, scene: Phaser.Scene): 
         speedX: { min: -slope * spec.speed.max, max: -slope * spec.speed.min },
         accelerationX: spec.sway > 0 ? { min: -spec.sway, max: spec.sway } : 0,
         rotate: { min: lean - 2, max: lean + 2 },
-        scaleY: { min: spec.length.min, max: spec.length.max },
+        // (k = 1 leaves the original values; otherwise the k-times-larger texture is drawn 1/k as large, at the size it always was)
+        ...(k === 1 ? { scaleY: { min: spec.length.min, max: spec.length.max } } : { scaleX: 1 / k, scaleY: { min: spec.length.min / k, max: spec.length.max / k } }),
         alpha: { min: spec.alpha.min, max: spec.alpha.max },
         lifespan: 1000,
         frequency: 100,

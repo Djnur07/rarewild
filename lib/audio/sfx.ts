@@ -2,11 +2,13 @@
  * Short sound effects, synthesized with the Web Audio API: no audio files to download, nothing to
  * preload, and nothing here touches the background music element (lib/audio/music.ts).
  *
- * - ONE shared AudioContext, created on the first effect. Browsers keep it suspended until the
- *   player has interacted with the page; the effects only play after PLAY is pressed, so by then it
- *   can run. If it still cannot (or Web Audio does not exist), effects are silently skipped.
- * - The effects follow the music controls: muted or at volume 0 means silent, and the level rises a
- *   little with the music volume slider.
+ * - They play through the game's ONE shared AudioContext (lib/audio/context.ts). Browsers keep it
+ *   suspended until the player has interacted with the page (on phones it is unlocked by the same
+ *   first touch that starts the music); if it cannot run, or Web Audio does not exist, effects are
+ *   silently skipped.
+ * - The effects follow the music controls: muted or at volume 0 means silent. On desktop the level
+ *   rises a little with the volume slider; on a phone it follows the slider proportionally, so the
+ *   slider audibly changes the effects (see `sfxLevel`).
  * - Every effect is a few oscillator notes of at most half a second. Each note disconnects itself
  *   when it ends, so nothing accumulates. A minimum gap per effect keeps a burst of events from
  *   stacking into noise, and jump / land / pickup vary slightly in pitch so they do not repeat exactly.
@@ -14,6 +16,8 @@
  *   browser tests can check the game asks for the right sound at the right moment.
  */
 
+import { isTouchPhone } from "../platform/touchPhone.ts";
+import { sharedAudioContext } from "./context.ts";
 import { getMusicState } from "./music.ts";
 
 export type SfxName = "pickup" | "jump" | "land" | "danger" | "capture" | "complete";
@@ -31,9 +35,8 @@ const MIN_GAP_MS: Record<SfxName, number> = { pickup: 40, jump: 70, land: 120, d
 const stats: Record<SfxName, number> = { pickup: 0, jump: 0, land: 0, danger: 0, capture: 0, complete: 0 };
 const lastTriggeredAt: Record<SfxName, number> = { pickup: -Infinity, jump: -Infinity, land: -Infinity, danger: -Infinity, capture: -Infinity, complete: -Infinity };
 
-let context: AudioContext | null = null;
 let master: GainNode | null = null;
-let unavailable = false;
+let masterContext: AudioContext | null = null;
 
 /** How many times each effect has been triggered since the page loaded (a development / test aid). */
 export function getSfxStats(): Readonly<Record<SfxName, number>> {
@@ -41,24 +44,36 @@ export function getSfxStats(): Readonly<Record<SfxName, number>> {
 }
 
 function audioContext(): AudioContext | null {
-  if (unavailable || typeof window === "undefined") return null;
-  if (!context) {
-    const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!Ctor) {
-      unavailable = true;
-      return null;
-    }
-    try {
-      context = new Ctor();
-      master = context.createGain();
-      master.connect(context.destination);
-    } catch {
-      unavailable = true;
-      return null;
-    }
+  const ac = sharedAudioContext();
+  if (!ac) return null;
+  if (masterContext !== ac || !master) {
+    master = ac.createGain();
+    master.connect(ac.destination);
+    masterContext = ac;
   }
-  if (context.state === "suspended") void context.resume().catch(() => undefined);
-  return context;
+  if (ac.state === "suspended") void ac.resume().catch(() => undefined);
+  return ac;
+}
+
+/**
+ * The overall effects level (0 = silent) for the music controls' state. Desktop: the original curve,
+ * a floor plus a little of the slider (0.16 + 0.34 * volume). Phone: 0 at the bottom of the slider and
+ * 0.55 at the top, rising at every step in between (a power curve, so it never flattens out), with the
+ * same loudness as desktop at the default volume. The slider therefore audibly changes the effects
+ * everywhere along its length, which the desktop curve (a floor of 0.16) does not.
+ */
+export function sfxLevel(volume: number, muted: boolean, touchPhone: boolean): number {
+  if (muted || volume <= 0) return 0;
+  return touchPhone ? 0.55 * Math.min(1, volume) ** PHONE_SFX_EXPONENT : 0.16 + 0.34 * volume;
+}
+
+/** 0.55 * 0.22 ** 0.5616 = 0.235, the desktop level at the default volume (0.22). */
+const PHONE_SFX_EXPONENT = 0.5616;
+
+/** The level the effects would play at right now (a development / test aid). */
+export function currentSfxLevel(): number {
+  const { muted, volume } = getMusicState();
+  return sfxLevel(volume, muted, isTouchPhone());
 }
 
 interface Note {
@@ -138,11 +153,11 @@ export function playSfx(name: SfxName, options: SfxOptions = {}): void {
   lastTriggeredAt[name] = now;
   stats[name]++;
 
-  const { muted, volume } = getMusicState();
-  if (muted || volume <= 0) return;
+  const level = currentSfxLevel();
+  if (level <= 0) return;
   const ac = audioContext();
   if (!ac || !master || ac.state !== "running") return;
-  master.gain.value = 0.16 + 0.34 * volume;
+  master.gain.value = level;
   const start = ac.currentTime + 0.005;
   for (const note of notesFor(name, options)) playNote(ac, master, start, note);
 }

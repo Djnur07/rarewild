@@ -10,7 +10,14 @@
  *   the game or UI (skins, drawer, wallet) touches it, so it never restarts.
  * - Volume and mute live here (not in React state), survive re-renders, and are
  *   remembered across visits.
+ * - On a phone or tablet the same element is routed through a gain node on the game's shared audio
+ *   context (lib/audio/context.ts), and the slider sets that gain. iOS Safari ignores
+ *   `HTMLAudioElement.volume` (it always plays at full volume), so without this the slider does
+ *   nothing there. Desktop keeps using `element.volume` exactly as before.
  */
+
+import { audioContextState, resumeAudioContext, sharedAudioContext } from "./context.ts";
+import { isTouchPhone } from "../platform/touchPhone.ts";
 
 const MUSIC_SRC = "/audio/rarewild-theme.mp3";
 const DEFAULT_VOLUME = 0.22;
@@ -30,6 +37,8 @@ export const DEFAULT_MUSIC_STATE: MusicState = Object.freeze({ volume: DEFAULT_V
 let state: MusicState | null = null;
 let audio: HTMLAudioElement | null = null;
 let unavailable = false;
+/** Phones only: the gain node the music element plays through (null on desktop, or if routing was not possible). */
+let gain: GainNode | null = null;
 const listeners = new Set<() => void>();
 
 function readSaved(): MusicState {
@@ -63,12 +72,49 @@ export function subscribeToMusic(listener: () => void): () => void {
   return () => listeners.delete(listener);
 }
 
+/** Push the volume / mute to whatever produces the sound: the gain node on a phone, the element itself elsewhere. */
+function applyOutput(element: HTMLAudioElement, next: MusicState) {
+  if (gain) {
+    element.volume = 1; // the gain node is the only volume control while routed
+    element.muted = next.muted;
+    gain.gain.value = next.muted ? 0 : next.volume;
+  } else {
+    element.volume = next.volume;
+    element.muted = next.muted;
+  }
+}
+
+/** Phones only: play the element through a gain node so its volume can be controlled on iOS. Falls back to element.volume if that is not possible. */
+function routeThroughGain(element: HTMLAudioElement) {
+  if (!isTouchPhone() || gain) return;
+  const ac = sharedAudioContext();
+  if (!ac) return;
+  try {
+    const node = ac.createGain();
+    ac.createMediaElementSource(element).connect(node);
+    node.connect(ac.destination);
+    gain = node;
+    applyOutput(element, getMusicState());
+  } catch {
+    gain = null; // the element keeps playing on its own, with element.volume
+  }
+}
+
+/** What is actually producing the sound right now (a development / test aid). */
+export function getMusicOutput() {
+  return {
+    routed: gain !== null,
+    gain: gain ? gain.gain.value : null,
+    elementVolume: audio ? audio.volume : null,
+    elementMuted: audio ? audio.muted : null,
+    contextState: audioContextState(),
+    playing: audio ? !audio.paused : false,
+  };
+}
+
 function update(next: MusicState) {
   state = next;
-  if (audio) {
-    audio.volume = next.volume;
-    audio.muted = next.muted;
-  }
+  if (audio) applyOutput(audio, next);
   save();
   listeners.forEach((listener) => listener());
 }
@@ -86,6 +132,8 @@ export function setMusicMuted(muted: boolean) {
 
 function tryPlay(removeGestureListeners: () => void) {
   if (unavailable) return;
+  // A phone unlocks its audio inside this gesture: iOS only starts an audio context from a touch handler.
+  if (isTouchPhone()) resumeAudioContext();
   if (!audio) {
     const created = new Audio(MUSIC_SRC);
     created.loop = true;
@@ -98,6 +146,8 @@ function tryPlay(removeGestureListeners: () => void) {
       removeGestureListeners();
     });
     audio = created;
+    routeThroughGain(created);
+    if (isTouchPhone()) resumeAudioContext();
   }
   if (!audio.paused) {
     removeGestureListeners();
@@ -125,8 +175,23 @@ export function startMusicOnFirstInteraction(): () => void {
   };
   for (const type of GESTURE_EVENTS) window.addEventListener(type, onGesture, { capture: true, passive: true });
 
+  // Phones: the system can suspend the audio context later (a call, the tab in the background), which would silence
+  // the routed music and the effects. Any later touch, or the page becoming visible again, brings it back.
+  const onWake = () => resumeAudioContext();
+  const watchWake = isTouchPhone();
+  if (watchWake) {
+    window.addEventListener("pointerdown", onWake, { capture: true, passive: true });
+    window.addEventListener("touchend", onWake, { capture: true, passive: true });
+    document.addEventListener("visibilitychange", onWake);
+  }
+
   return () => {
     removeGestureListeners();
+    if (watchWake) {
+      window.removeEventListener("pointerdown", onWake, true);
+      window.removeEventListener("touchend", onWake, true);
+      document.removeEventListener("visibilitychange", onWake);
+    }
     audio?.pause();
   };
 }

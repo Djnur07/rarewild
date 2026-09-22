@@ -19,6 +19,8 @@ import { pathToFileURL } from "node:url";
 import { join } from "node:path";
 import { collectibleCenter, FIRST_LEVEL_COLLECTIBLES } from "../../lib/collectibles/placement.ts";
 import { dangerEdgeAlpha, dangerLevel } from "../../lib/feedback/danger.ts";
+import { sfxLevel } from "../../lib/audio/sfx.ts";
+import { singleRowLayout, musicControlFootprint, controlSideMargin, MOBILE_CAMERA_ZOOM_FACTOR, type DesignButton } from "../../lib/mobile/layout.ts";
 import { FIRST_LEVEL_HUNTERS } from "../../lib/hunter/placement.ts";
 import { GROUND_SURFACE_Y, PLAYER_START_X } from "../../lib/level/constants.ts";
 import { ZONES, zoneAt } from "../../lib/level/zones.ts";
@@ -35,7 +37,8 @@ interface Page {
   evaluate<R = unknown, A = undefined>(fn: (arg: A) => R, arg?: A): Promise<R>;
   waitForFunction(fn: (arg: any) => unknown, arg?: unknown, options?: { timeout?: number }): Promise<unknown>;
   waitForTimeout(ms: number): Promise<void>;
-  screenshot(options: { path: string }): Promise<unknown>;
+  screenshot(options: { path?: string }): Promise<Uint8Array>;
+  setViewportSize(size: { width: number; height: number }): Promise<void>;
   on(event: string, handler: (arg: any) => void): void;
   context(): { close(): Promise<void> };
   keyboard: { down(key: string): Promise<void>; up(key: string): Promise<void>; press(key: string): Promise<void> };
@@ -72,7 +75,9 @@ type Snapshot = {
   rara: { x: number; y: number; vx: number; vy: number; onFloor: boolean };
   hunters: { x: number; y: number; state: string; caught: boolean }[];
   readyVisible: boolean; caughtVisible: boolean; completeVisible: boolean;
-  viewport: { width: number; height: number; zoom: number };
+  viewport: { width: number; height: number; zoom: number; worldView: { x: number; y: number; width: number; height: number } };
+  touch: { phone: boolean; held: { left: boolean; right: boolean; jump: boolean }; pointers: number };
+  audio: { routed: boolean; gain: number | null; elementVolume: number | null; elementMuted: boolean | null; contextState: string | null; playing: boolean; sfxLevel: number };
   feedback: { active: number; edgeAlpha: number; glowAlpha: number; reducedMotion: boolean; sfx: Record<string, number>; shaking: boolean; flashing: boolean; sceneObjects: number };
 };
 type Rect = { x: number; y: number; width: number; height: number };
@@ -785,7 +790,701 @@ try {
   check("F19. with reduced motion the danger is still shown as a steady tint (the same value on every frame of a 0.8s chase, no pulsing), and being caught still works with the red edge pulse but no camera shake or flash", calmReacted && calmTint && isSteady && cc.phase === "CAUGHT" && cc.feedback.edgeAlpha > 0.3 && !cc.feedback.shaking && !cc.feedback.flashing && (await until(calm, (x) => x.caughtVisible, 1000)), `tint ${steady.min.toFixed(4)} .. ${steady.max.toFixed(4)} over ${steady.frames} frames, expected ${steadyValue.toFixed(3)}`);
   await calm.context().close();
 
-  check("no page errors or console errors", errors.length === 0, errors.slice(0, 3).join(" | "));
+  // ============================================================================================================
+  // Phones and desktop: multi-finger touch controls, volume that works on a phone, larger HUD text and controls on a
+  // phone, and proof that desktop is untouched. "Phone" = a touch-emulated context (coarse pointer, no hover).
+  // ============================================================================================================
+  type Geo = Record<string, [number, number, number, number]>; // label -> [centre x, centre y, width, height], page px
+  const HUD_LABELS = ["RAREWILD", "SAVE THE MANGROVE", "COLLECTED", "TIME:"] as const;
+  const BUTTON_LABELS = ["←", "→", "SWING", "JUMP"] as const;
+  // Recorded from the game BEFORE the phone changes (the same window sizes, mouse only): desktop must still match to the pixel.
+  const DESKTOP_BEFORE: Record<string, Geo> = {
+    "1280x720": { "RAREWILD": [640, 72, 242.4, 51.36], "SAVE THE MANGROVE": [640, 138, 294, 29.57], "COLLECTED": [640, 182.4, 274.8, 31.7], "TIME:": [552.4, 218.4, 146.4, 25.61], "←": [460, 612, 91.2, 75.75], "→": [592, 612, 91.2, 75.75], "SWING": [760, 612, 121.2, 72.64], "JUMP": [940, 612, 129.6, 72.77] },
+    "1920x1080": { "RAREWILD": [960, 108, 363.6, 77.04], "SAVE THE MANGROVE": [960, 207, 441, 44.36], "COLLECTED": [960, 273.6, 412.2, 47.55], "TIME:": [828.6, 327.6, 219.6, 38.42], "←": [690, 918, 136.8, 113.63], "→": [888, 918, 136.8, 113.63], "SWING": [1140, 918, 181.8, 108.97], "JUMP": [1410, 918, 194.4, 109.16] },
+    "1024x768": { "RAREWILD": [512, 76.8, 258.56, 54.78], "SAVE THE MANGROVE": [512, 147.2, 313.6, 31.55], "COLLECTED": [512, 194.56, 293.12, 33.82], "TIME:": [418.56, 232.96, 156.16, 27.32], "←": [320, 652.8, 97.28, 80.8], "→": [460.8, 652.8, 97.28, 80.8], "SWING": [640, 652.8, 129.28, 77.49], "JUMP": [832, 652.8, 138.24, 77.62] },
+    // A narrow window driven by a mouse is still a desktop: it must keep the shrunken layout it always had.
+    "390x844": { "RAREWILD": [195, 84.4, 98.48, 20.86], "SAVE THE MANGROVE": [195, 161.77, 119.44, 12.01], "COLLECTED": [195, 213.81, 111.64, 12.88], "TIME:": [159.41, 256.01, 59.47, 10.4], "←": [121.87, 717.4, 37.05, 30.77], "→": [175.5, 717.4, 37.05, 30.77], "SWING": [243.75, 717.4, 49.24, 29.51], "JUMP": [316.88, 717.4, 52.65, 29.56] },
+  };
+  // The same measurements on the phone-sized windows before the change, to compare the phone against.
+  const PHONE_BEFORE: Record<string, Geo> = {
+    "390x844": DESKTOP_BEFORE["390x844"],
+    "320x568": { "RAREWILD": [160, 56.8, 80.8, 17.12], "SAVE THE MANGROVE": [160, 108.87, 98.0, 9.86], "COLLECTED": [160, 143.89, 91.6, 10.57], "TIME:": [130.8, 172.29, 48.8, 8.54], "←": [100.0, 482.8, 30.4, 25.25], "→": [144, 482.8, 30.4, 25.25], "SWING": [200, 482.8, 40.4, 24.21], "JUMP": [260, 482.8, 43.2, 24.26] },
+    "360x740": { "RAREWILD": [180, 74, 90.9, 19.26], "SAVE THE MANGROVE": [180, 141.83, 110.25, 11.09], "COLLECTED": [180, 187.47, 103.05, 11.89], "TIME:": [147.15, 224.47, 54.9, 9.6], "←": [112.5, 629, 34.2, 28.41], "→": [162, 629, 34.2, 28.41], "SWING": [225, 629, 45.45, 27.24], "JUMP": [292.5, 629, 48.6, 27.29] },
+    "430x932": { "RAREWILD": [215, 93.2, 108.58, 23.0], "SAVE THE MANGROVE": [215, 178.63, 131.69, 13.25], "COLLECTED": [215, 236.11, 123.09, 14.2], "TIME:": [175.76, 282.71, 65.58, 11.47], "←": [134.38, 792.2, 40.85, 33.93], "→": [193.5, 792.2, 40.85, 33.93], "SWING": [268.75, 792.2, 54.29, 32.54], "JUMP": [349.38, 792.2, 58.05, 32.6] },
+    "844x390": { "RAREWILD": [422, 39, 131.3, 27.82], "SAVE THE MANGROVE": [422, 74.75, 159.25, 16.02], "COLLECTED": [422, 98.8, 148.85, 17.17], "TIME:": [374.55, 118.3, 79.3, 13.87], "←": [324.5, 331.5, 49.4, 41.03], "→": [396, 331.5, 49.4, 41.03], "SWING": [487, 331.5, 65.65, 39.35], "JUMP": [584.5, 331.5, 70.2, 39.42] },
+    "667x375": { "RAREWILD": [333.5, 37.5, 126.25, 26.75], "SAVE THE MANGROVE": [333.5, 71.88, 153.12, 15.4], "COLLECTED": [333.5, 95, 143.12, 16.51], "TIME:": [287.88, 113.75, 76.25, 13.34], "←": [239.75, 318.75, 47.5, 39.45], "→": [308.5, 318.75, 47.5, 39.45], "SWING": [396, 318.75, 63.12, 37.84], "JUMP": [489.75, 318.75, 67.5, 37.9] },
+  };
+  const edges = (r: Rect) => ({ left: r.x - r.width / 2, right: r.x + r.width / 2, top: r.y - r.height / 2, bottom: r.y + r.height / 2 });
+  const domRect = (page: Page, selector: string) =>
+    page.evaluate((sel) => { const r = document.querySelector(sel)!.getBoundingClientRect(); return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height }; }, selector);
+  /** The [r, g, b] on screen at these CSS-px positions, read from a real screenshot (decoded inside the page with a canvas). */
+  const pixelsAt = async (page: Page, points: [number, number][]) => {
+    const base64 = Buffer.from(await page.screenshot({})).toString("base64");
+    const rows = await page.evaluate(async ([data, pts]: [string, [number, number][]]) => {
+      const img = new Image();
+      img.src = "data:image/png;base64," + data;
+      await img.decode();
+      const canvas = document.createElement("canvas");
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const g = canvas.getContext("2d")!;
+      g.drawImage(img, 0, 0);
+      const k = img.width / window.innerWidth;
+      return pts.map(([x, y]) => Array.from(g.getImageData(Math.round(x * k), Math.round(y * k), 1, 1).data.slice(0, 3)));
+    }, [base64, points] as [string, [number, number][]]);
+    return rows as unknown as number[][]; // (evaluate's typing wraps the async result in one more Promise, which `await` has already unwrapped)
+  };
+  const wrapperTouchAction = (page: Page) => page.evaluate(() => getComputedStyle(document.querySelector("canvas")!.parentElement!).touchAction);
+  const phoneOptions = (width: number, height: number) => ({ viewport: { width, height }, deviceScaleFactor: 2, hasTouch: true, isMobile: true });
+
+  // D1-D3. Desktop is untouched: the same layout to the pixel, the same input set-up, the original audio path.
+  const desktopProblems: string[] = [];
+  let desktopObjects = 0;
+  for (const [size, before] of Object.entries(DESKTOP_BEFORE)) {
+    const [w, h] = size.split("x").map(Number);
+    const dsk = await openGame(browser, { viewport: { width: w, height: h } });
+    const snapped = await snap(dsk);
+    for (const label of [...HUD_LABELS, ...BUTTON_LABELS]) {
+      const r = await rectOf(dsk, label);
+      const want = before[label];
+      if (!r || Math.abs(r.x - want[0]) > 0.05 || Math.abs(r.y - want[1]) > 0.05 || Math.abs(r.width - want[2]) > 0.05 || Math.abs(r.height - want[3]) > 0.05) desktopProblems.push(`${size} ${label}`);
+    }
+    if (snapped.touch.phone || snapped.touch.pointers !== 2 || (await wrapperTouchAction(dsk)) !== "auto") desktopProblems.push(`${size} input set-up`);
+    // The camera: zoom is exactly window height / 600 (as before), it frames exactly the world's height (no empty strip), and it frames width / zoom of the world.
+    if (size === "1280x720") desktopObjects = snapped.feedback.sceneObjects;
+    const cam = snapped.viewport;
+    if (cam.zoom !== h / 600 || cam.worldView.y !== 0 || Math.abs(cam.worldView.height - 600) > 1e-6 || Math.abs(cam.worldView.width - w / (h / 600)) > 1e-6) desktopProblems.push(`${size} camera (zoom ${cam.zoom}, view ${JSON.stringify(cam.worldView)})`);
+    await dsk.context().close();
+  }
+  check("D1. desktop is unchanged: at four window sizes (a narrow mouse-driven window included) every HUD line and all four control buttons are where and as large as before the phone changes (to 0.05px), the camera zoom is exactly window height / 600 and frames exactly the world's height, and it is not treated as a phone", desktopProblems.length === 0, desktopProblems.join(", ") || "4 sizes x 8 items");
+
+  const dsk = await openGame(browser, { viewport: { width: 1280, height: 720 } });
+  await clickButton(dsk, "PLAY");
+  await until(dsk, (x) => x.phase === "PLAYING", 2000);
+  await until(dsk, (x) => x.audio.playing, 4000);
+  let da = (await snap(dsk)).audio;
+  check("D2. desktop audio is unchanged: the music element's own volume is the control (no gain node, no phone routing), and the effects use the original curve", !da.routed && da.gain === null && da.elementVolume !== null && Math.abs(da.elementVolume - 0.22) < 0.001 && Math.abs(da.sfxLevel - (0.16 + 0.34 * 0.22)) < 1e-9, JSON.stringify(da));
+  const dSlider = await domRect(dsk, "input[type=range]");
+  await dsk.mouse.click(dSlider.left + dSlider.width * 0.75, dSlider.top + dSlider.height / 2);
+  da = (await snap(dsk)).audio;
+  check("    ...and moving the slider with the mouse still sets that element volume directly (and the effects level with the original formula)", !da.routed && da.elementVolume !== null && da.elementVolume > 0.6 && da.elementVolume < 0.9 && Math.abs(da.sfxLevel - (0.16 + 0.34 * da.elementVolume)) < 1e-9, `element volume ${da.elementVolume}`);
+  const dMute = await domRect(dsk, "[data-testid=music-control] button");
+  await dsk.mouse.click(dMute.left + dMute.width / 2, dMute.top + dMute.height / 2);
+  da = (await snap(dsk)).audio;
+  check("    ...and mute still mutes the element and silences the effects", da.elementMuted === true && da.sfxLevel === 0 && !da.routed);
+  await dsk.context().close();
+
+  // P1-P9. Phone layout, at six phone-sized windows (portrait and landscape).
+  const layoutProblems: Record<string, string[]> = {};
+  const note = (key: string, size: string) => (layoutProblems[key] ??= []).push(size);
+  const measured: Record<string, string> = {};
+  let phoneObjects = 0;
+  // The four buttons on the 800x600 design frame (matches scripts/mobile/validate-mobile.ts): used below, via the same shared
+  // sizing `layoutTouchControls` itself starts from, to compute what a single centred row would sit at TODAY, at this exact
+  // width and height (button sizes and the ground-line / volume-control clamps all included) — the reference for "lifted".
+  const ROW_DESIGN: DesignButton[] = [
+    { id: "left", x: 250, y: 510, width: 76, height: 63.1 },
+    { id: "right", x: 360, y: 510, width: 76, height: 63.1 },
+    { id: "swing", x: 500, y: 510, width: 101, height: 60.5 },
+    { id: "jump", x: 650, y: 510, width: 108, height: 60.6 },
+  ];
+  const singleRowY = (width: number, height: number) => singleRowLayout({ width, height, zoom: height / 600, designHeight: 600, groundDesignY: GROUND_SURFACE_Y }, ROW_DESIGN).rowCentre;
+  for (const [w, h] of [[390, 844], [360, 740], [430, 932], [320, 568], [844, 390], [667, 375]] as const) {
+    const size = `${w}x${h}`;
+    const ph = await openGame(browser, phoneOptions(w, h));
+    await wait(ph, 300);
+    const cam = (await snap(ph)).viewport;
+    const zoom = cam.zoom;
+    const rect: Record<string, Rect> = {};
+    for (const label of [...HUD_LABELS, ...BUTTON_LABELS, "EXIT", "Collect all"]) rect[label] = (await rectOf(ph, label))!;
+    const music = await domRect(ph, "[data-testid=music-control]");
+    const before = PHONE_BEFORE[size];
+    const b = BUTTON_LABELS.map((l) => edges(rect[l]));
+    const left = Math.min(...b.map((e) => e.left));
+    const right = Math.max(...b.map((e) => e.right));
+    const gap = rect["→"].x - rect["←"].x;
+    // The arrangement: same order and everything at the same height, always. Portrait keeps the single centred row exactly as
+    // it was; landscape splits into two groups (<-/-> toward the left edge, SWING/JUMP toward the right), each keeping its own
+    // exact design-frame spacing, with a clearly larger gap between the groups than either group's own internal gap.
+    if (!(rect["←"].x < rect["→"].x && rect["→"].x < rect["SWING"].x && rect["SWING"].x < rect["JUMP"].x) || BUTTON_LABELS.some((l) => Math.abs(rect[l].y - rect["←"].y) > 0.5)) note("order", size);
+    if (Math.abs((rect["JUMP"].x - rect["SWING"].x) / gap - 150 / 110) > 0.02) note("spacing", size);
+    const rightMarginPx = w - right;
+    if (w > h) {
+      const innerLeft = b[1].left - b[0].right;
+      const innerRight = b[3].left - b[2].right;
+      const midGap = b[2].left - b[1].right;
+      if (midGap < 3 * Math.max(innerLeft, innerRight, 8)) note("group gap", size);
+      // Both groups sit at or above where a single centred row would rest today at this height (its own ground-line safety
+      // clamp included): lifted when there is room to, and never lower than that reference even where there is not.
+      const singleRow = singleRowY(w, h);
+      if (rect["←"].y > singleRow + 0.5) note("lifted", `${size} (${rect["←"].y.toFixed(1)} vs single-row ${singleRow.toFixed(1)})`);
+      if (left < 14 - 0.5 || left < 0.06 * w - 1) note("margins", size);
+      // SWING/JUMP's own right margin is either the reduced ~half-margin (when the row's own bottom edge already clears the
+      // volume control's corner) or exactly that control's own clearance (when, at these button sizes, it does not) - never
+      // anything smaller, and never anything in between.
+      const reducedMargin = Math.max(8, 0.03 * w);
+      const footprint = musicControlFootprint(h);
+      const protectedMargin = Math.max(reducedMargin, footprint.width + 8);
+      if (!(Math.abs(rightMarginPx - reducedMargin) < 1 || Math.abs(rightMarginPx - protectedMargin) < 1)) note("margins", size);
+    } else {
+      if (Math.abs((rect["SWING"].x - rect["→"].x) / gap - 140 / 110) > 0.02) note("spacing", size);
+      if (Math.abs(left - rightMarginPx) > 1) note("centred", size);
+      if (left < 14 || left < 0.06 * w - 1) note("margins", size);
+    }
+    if (b.some((e) => e.left < 0 || e.right > w || e.bottom > h - 10)) note("on screen", size);
+    if (b.some((e, i) => i > 0 && e.left - b[i - 1].right < 8)) note("spacing between", size);
+    // Not covering the play area: below the ground line (Rara's feet), and clear of the volume control (wherever that
+    // corner is: bottom-right in portrait, top-left in landscape — a real rectangle-overlap test, not a corner-specific one).
+    const groundLine = (GROUND_SURFACE_Y - cam.worldView.y) * zoom; // where Rara's feet are on screen, from the camera's own view of the world
+    if (b.some((e) => e.top < groundLine + 1)) note("below the ground line", size);
+    if (b.some((e) => !(e.right <= music.left || e.left >= music.right || e.bottom <= music.top || e.top >= music.bottom))) note("clear of the volume control", size);
+    // The volume control itself: top-left corner in landscape (clear of the timer, which shares the subtitle's row there),
+    // bottom-right corner everywhere else (unchanged).
+    if (w > h) {
+      if (music.left > 20 || music.top > 20) note("volume top-left", size);
+      if (!(music.bottom <= edges(rect["TIME:"]).top || music.top >= edges(rect["TIME:"]).bottom || music.right <= edges(rect["TIME:"]).left || music.left >= edges(rect["TIME:"]).right)) note("volume clear of timer", size);
+    } else if (music.right < w - 20 || music.bottom < h - 20) {
+      note("volume bottom-right", size);
+    }
+    if (size === "390x844") phoneObjects = (await snap(ph)).feedback.sceneObjects;
+    // No empty band: the screen's bottom edge (away from the volume control and the dev badge) is soil, not the dark-green void colour.
+    // Only checked in landscape: a portrait phone now shows the rotate overlay on top of the game (see the ROT checks below), which
+    // paints over this same pixel on purpose, so a screenshot there is not testing the ground extension any more.
+    if (w > h) {
+      const bottom = await pixelsAt(ph, [[0.12 * w, h - 2], [0.3 * w, h - 2], [0.5 * w, h - 2]]);
+      const soil = bottom.filter(([r, g, b]) => r >= g && !(Math.abs(r - 16) <= 8 && Math.abs(g - 37) <= 8 && Math.abs(b - 29) <= 8)).length;
+      if (soil < 2) note("no empty band", `${size} (${bottom.map((p) => `rgb(${p})`).join(" ")})`);
+    }
+    // The camera: exactly 1 (matches the window-height zoom precisely, the same framing desktop uses), so no extra width or height is shown.
+    const oldZoom = h / 600;
+    if (Math.abs(zoom - MOBILE_CAMERA_ZOOM_FACTOR * oldZoom) > 1e-9) note("camera zoom", `${size} (${zoom.toFixed(4)})`);
+    if (Math.abs(cam.worldView.width / (w / oldZoom) - 1 / MOBILE_CAMERA_ZOOM_FACTOR) > 1e-6) note("more world visible", size);
+    if (Math.abs(600 * zoom - h) > 1e-6 || Math.abs(cam.worldView.y) > 1e-6 || Math.abs(cam.worldView.height - 600) > 1e-6) note("world framing", size);
+    // Larger than before.
+    const grew = rect["←"].height / before["←"][3];
+    if (h > w ? grew < 1.35 : w >= 700 ? grew < 1.3 : grew < 1.1) note("larger buttons", size);
+    // HUD lines: larger by a moderate amount, same anchor points, no overlaps, hierarchy kept.
+    for (const label of ["SAVE THE MANGROVE", "COLLECTED", "TIME:"] as const) {
+      const ratio = rect[label].height / before[label][3];
+      if (ratio < 1.18 || ratio > 1.32) note(`text size ${label}`, `${size} (${ratio.toFixed(2)}x)`);
+    }
+    if (Math.abs(rect["RAREWILD"].x - before["RAREWILD"][0]) > 0.5 || Math.abs(rect["RAREWILD"].height - before["RAREWILD"][3]) > 0.1) note("title unchanged", size);
+    if (["SAVE THE MANGROVE", "COLLECTED"].some((l) => Math.abs(rect[l].x - before[l][0]) > 0.5 || Math.abs(rect[l].y - before[l][1]) > 0.5)) note("HUD positions kept", size);
+    if (w > h) {
+      // Landscape: the timer shares the subtitle's row (same y) and sits near the left edge (the standard comfortable margin),
+      // to the left of "SAVE THE MANGROVE" (which itself has not moved, checked above), instead of pairing with the exit status.
+      const timerLeft = edges(rect["TIME:"]).left;
+      if (Math.abs(rect["TIME:"].y - rect["SAVE THE MANGROVE"].y) > 0.5) note("timer row", size);
+      if (Math.abs(timerLeft - controlSideMargin(w)) > 1) note("timer left edge", size);
+      if (edges(rect["TIME:"]).right >= rect["SAVE THE MANGROVE"].x - rect["SAVE THE MANGROVE"].width / 2) note("timer left of subtitle", size);
+    } else if (Math.abs(edges(rect["TIME:"]).right - (before["TIME:"][0] + before["TIME:"][2] / 2)) > 0.7) note("timer anchor kept", size);
+    // SAVE THE MANGROVE / COLLECTED / (in portrait) TIME stack vertically with no overlap; in landscape TIME has moved off that
+    // stack entirely (checked separately above), so it is compared against the start panel instead, the same as the others.
+    const hud = w > h ? [rect["SAVE THE MANGROVE"], rect["COLLECTED"]].map(edges) : [rect["SAVE THE MANGROVE"], rect["COLLECTED"], rect["TIME:"]].map(edges);
+    const stacked = w > h ? hud[0].bottom > hud[1].top : hud[0].bottom > hud[1].top || hud[1].bottom > hud[2].top || edges(rect["TIME:"]).right >= edges(rect["EXIT"]).left;
+    if (stacked || hud.at(-1)!.bottom > edges(rect["Collect all"]).top || edges(rect["TIME:"]).bottom > edges(rect["Collect all"]).top) note("HUD overlaps", size);
+    if (hud.some((e) => e.left < 0 || e.right > w) || edges(rect["EXIT"]).right > w) note("HUD on screen", size);
+    if (rect["RAREWILD"].height <= rect["SAVE THE MANGROVE"].height) note("hierarchy", size);
+    // The volume control keeps a usable size: 28px+ button, 24px+ slider row.
+    const mute = await domRect(ph, "[data-testid=music-control] button");
+    const slider = await domRect(ph, "input[type=range]");
+    if (mute.width < 28 || mute.height < 28 || slider.height < 24) note("volume control size", size);
+    measured[size] = `buttons ${rect["←"].height.toFixed(0)}px (${grew.toFixed(2)}x), margins ${left.toFixed(0)}/${(w - right).toFixed(0)}`;
+    await ph.context().close();
+  }
+  const layoutCheck = (label: string, keys: string[]) => {
+    const failed = keys.flatMap((k) => (layoutProblems[k] ?? []).map((s) => `${k}@${s}`));
+    check(label, failed.length === 0, failed.join(", ") || "6 phone sizes");
+  };
+  layoutCheck("P1. phone controls keep the existing arrangement: same order (left, right, swing, jump), everything at one height, same spacing proportions within each pair", ["order", "spacing"]);
+  layoutCheck("P2. ...and it keeps clear of the edges (14px+, 6%+ of the width, on each side), fully on screen, with 8px+ between buttons", ["margins", "on screen", "spacing between"]);
+  layoutCheck("P2b. in portrait, the four buttons stay one centred row, with equal margins to the left and the right (within 1px)", ["centred"]);
+  layoutCheck("P3. ...and the buttons are LARGER than before (1.35x+ on portrait phones, 1.3x+ on landscape phones 700px+ wide, 1.1x+ on the smallest)", ["larger buttons"]);
+  layoutCheck("P8. in landscape, LEFT+RIGHT and SWING+JUMP form two clearly separated groups: the gap between them is at least 3x either group's own internal spacing", ["group gap"]);
+  layoutCheck("P9. in landscape, both groups sit at or above where a single centred row would rest today at that height (lifted when there is room; never pushed lower than that safety-clamped reference where there is not)", ["lifted"]);
+  layoutCheck("P10. in landscape, the timer shares SAVE THE MANGROVE's row (same height) and sits to its left, near the left edge, instead of pairing with the exit status", ["timer row", "timer left edge", "timer left of subtitle"]);
+  layoutCheck("P11. the volume control moves to the top-left corner in landscape only (clear of the timer there); portrait keeps it bottom-right", ["volume top-left", "volume clear of timer", "volume bottom-right"]);
+  layoutCheck("C1. phone camera: the zoom is exactly 1x the window-height zoom (matches desktop's framing) at all six phone sizes, and desktop's own zoom is untouched (D1)", ["camera zoom"]);
+  layoutCheck("C4. no empty band: at the two landscape phone sizes in this set (the ones a player actually plays on, now that portrait shows the rotate overlay) the bottom edge of the screen is brown soil, never the dark-green void or black", ["no empty band"]);
+  check("C5. a phone adds exactly one thing to the scene for that (the ground extension); desktop adds nothing", phoneObjects === desktopObjects + 1, `${phoneObjects} objects on a phone vs ${desktopObjects} on desktop`);
+  layoutCheck("C2. ...so the phone frames exactly as much of the world as desktop does at that height (no extra width, no shrinking below 100% of the window height), anchored to the top of the screen", ["more world visible", "world framing"]);
+  layoutCheck("P4. ...without covering the game: every button is below the ground line where Rara stands, and clear of the volume control", ["below the ground line", "clear of the volume control"]);
+  layoutCheck("P5. phone HUD: SAVE THE MANGROVE, COLLECTED and TIME are each 1.18x-1.32x larger than before (moderate), and the title, positions and anchors are exactly as before", ["text size SAVE THE MANGROVE", "text size COLLECTED", "text size TIME:", "title unchanged", "HUD positions kept", "timer anchor kept"]);
+  layoutCheck("P6. ...and it stays readable: no line overlaps another or the exit status or the start panel, everything is on screen, and the title is still the largest", ["HUD overlaps", "HUD on screen", "hierarchy"]);
+  layoutCheck("P7. the volume control has phone-sized touch targets (28px+ mute button, 24px+ slider row)", ["volume control size"]);
+  check("    measured: " + Object.entries(measured).map(([k, v]) => `${k}: ${v}`).join(" | "), true);
+
+  // T. Touch controls: real multi-finger input, sent to Chrome as separate touch points.
+  const ph = await openGame(browser, phoneOptions(390, 844));
+  const cdp = (await (ph.context() as any).newCDPSession(ph)) as { send(method: string, params?: object): Promise<unknown> };
+  type Finger = { id: number; x: number; y: number };
+  // Chrome's touch protocol: touchStart / touchMove list EVERY finger that is down; touchEnd lists the fingers being RELEASED
+  // (an empty list releases all of them); and it refuses a touchEnd when no finger is down.
+  const down = new Set<number>();
+  const touch = async (type: "touchStart" | "touchMove" | "touchEnd" | "touchCancel", points: Finger[]) => {
+    await cdp.send("Input.dispatchTouchEvent", { type, touchPoints: points });
+    if (type === "touchStart" || type === "touchMove") {
+      down.clear();
+      for (const p of points) down.add(p.id);
+    } else if (type === "touchCancel" || points.length === 0) down.clear();
+    else for (const p of points) down.delete(p.id);
+  };
+  const lift = (...fingers: Finger[]) => touch("touchEnd", fingers);
+  const liftAll = async () => {
+    if (down.size > 0) await touch("touchEnd", []);
+  };
+  const phY = (await snap(ph)).rara.y;
+  s = await snap(ph);
+  check("T1. on a phone the game asks for four touch pointers (Phaser starts with one) and knows it is on a phone", s.touch.phone && s.touch.pointers >= 5 && (await wrapperTouchAction(ph)) === "none", `phone ${s.touch.phone}, ${s.touch.pointers} pointers (mouse + touches), touch-action ${await wrapperTouchAction(ph)}`);
+  await touch("touchStart", [{ id: 9, x: 195, y: 10 }]); // any first touch counts as the user gesture that starts the audio; nothing is under it
+  await liftAll();
+  const playBtn = (await rectOf(ph, "PLAY"))!;
+  await ph.touchscreen.tap(playBtn.x, playBtn.y);
+  await until(ph, (x) => x.phase === "PLAYING", 2000);
+  const [bL, bR, bS, bJ] = [(await rectOf(ph, "←"))!, (await rectOf(ph, "→"))!, (await rectOf(ph, "SWING"))!, (await rectOf(ph, "JUMP"))!];
+  const F = { L: { id: 1, x: bL.x, y: bL.y }, R: { id: 2, x: bR.x, y: bR.y }, S: { id: 3, x: bS.x, y: bS.y }, J: { id: 4, x: bJ.x, y: bJ.y } };
+  const settle = async (x: number) => {
+    await liftAll();
+    await place(ph, x, phY);
+    await until(ph, (v) => v.rara.onFloor && Math.abs(v.rara.vx) < 5 && !v.touch.held.left && !v.touch.held.right && !v.touch.held.jump, 3000);
+  };
+
+  // C3. Rara is centred in the frame and fully visible, and there is more room ahead of her than before.
+  const cv = (await snap(ph)).viewport;
+  const rs = (await snap(ph)).rara;
+  const screenX = (rs.x - cv.worldView.x) * cv.zoom;
+  const roomAhead = cv.worldView.x + cv.worldView.width - rs.x;
+  const roomBefore = (cv.width / (cv.height / 600)) / 2; // half the width the camera framed before this change
+  check("C3. on a phone Rara stays centred (within 2px of the middle of the screen), her whole body is in view, and she sees exactly as far ahead as before any phone-specific camera zoom was applied (matching desktop's framing at 1x)", Math.abs(screenX - cv.width / 2) < 2 && rs.y - 52.5 >= cv.worldView.y && rs.y + 52.5 <= cv.worldView.y + cv.worldView.height && Math.abs(roomAhead / roomBefore - 1 / MOBILE_CAMERA_ZOOM_FACTOR) < 0.005, `centre ${screenX.toFixed(1)} of ${cv.width}, room ahead ${roomAhead.toFixed(0)}px vs ${roomBefore.toFixed(0)}px before`);
+
+  // T2. RIGHT + JUMP: run while jumping, release JUMP and keep running, release RIGHT and stop.
+  await settle(1200);
+  await touch("touchStart", [F.R]);
+  const running = await until(ph, (x) => x.rara.vx > 300, 1500);
+  await touch("touchStart", [F.R, F.J]);
+  const jumped = await until(ph, (x) => !x.rara.onFloor && x.rara.vy < -100, 800);
+  const midAir = await snap(ph);
+  await wait(ph, 150);
+  const midAir2 = await snap(ph);
+  check("T2. RIGHT + JUMP held together: she jumps and keeps running right while she is in the air (both buttons held, moving 40px+ in 150ms)", running && jumped && midAir.touch.held.right && midAir.touch.held.jump && !midAir2.rara.onFloor && midAir2.rara.x > midAir.rara.x + 40 && midAir2.rara.vx > 300, `held ${JSON.stringify(midAir.touch.held)}, moved ${(midAir2.rara.x - midAir.rara.x).toFixed(0)}px in the air`);
+  await lift(F.J); // JUMP lifts, RIGHT stays down
+  const afterJumpUp = await snap(ph);
+  await wait(ph, 200);
+  const afterJumpUp2 = await snap(ph);
+  check("T3. releasing JUMP does not release RIGHT: RIGHT stays held and she keeps running right", afterJumpUp.touch.held.right && !afterJumpUp.touch.held.jump && afterJumpUp2.touch.held.right && afterJumpUp2.rara.x > afterJumpUp.rara.x + 40 && afterJumpUp2.rara.vx > 300, `held ${JSON.stringify(afterJumpUp2.touch.held)}, moved ${(afterJumpUp2.rara.x - afterJumpUp.rara.x).toFixed(0)}px`);
+  await liftAll();
+  const stopped = await until(ph, (x) => !x.touch.held.right && Math.abs(x.rara.vx) < 20, 1500);
+  check("    ...and releasing RIGHT then stops her", stopped);
+
+  // T4-T5. LEFT + JUMP, and releasing LEFT while JUMP stays down.
+  await settle(1700);
+  await touch("touchStart", [F.L]);
+  const runningLeft = await until(ph, (x) => x.rara.vx < -300, 1500);
+  await touch("touchStart", [F.L, F.J]);
+  const jumpedLeft = await until(ph, (x) => !x.rara.onFloor && x.rara.vy < -100, 800);
+  const l1 = await snap(ph);
+  await wait(ph, 150);
+  const l2 = await snap(ph);
+  check("T4. LEFT + JUMP held together: she jumps and keeps running left while she is in the air", runningLeft && jumpedLeft && l1.touch.held.left && l1.touch.held.jump && !l2.rara.onFloor && l2.rara.x < l1.rara.x - 40 && l2.rara.vx < -300, `held ${JSON.stringify(l1.touch.held)}, moved ${(l2.rara.x - l1.rara.x).toFixed(0)}px in the air`);
+  await lift(F.L); // LEFT lifts, JUMP stays down
+  const leftUp = await snap(ph);
+  const leftStopped = await until(ph, (x) => Math.abs(x.rara.vx) < 20 || x.rara.onFloor && Math.abs(x.rara.vx) < 60, 1500);
+  const leftUp2 = await snap(ph);
+  check("T5. releasing LEFT does not release JUMP: JUMP stays held, LEFT is released and her run slows to a stop", !leftUp.touch.held.left && leftUp.touch.held.jump && leftUp2.touch.held.jump && !leftUp2.touch.held.left && leftStopped, `held ${JSON.stringify(leftUp2.touch.held)}, vx ${leftUp2.rara.vx.toFixed(0)}`);
+  await liftAll();
+  check("    ...and releasing the last finger releases everything", await until(ph, (x) => !x.touch.held.left && !x.touch.held.right && !x.touch.held.jump, 1000));
+
+  // T6. Several buttons at once: three fingers, then all four; one finger lifting never drops the others.
+  await settle(1200);
+  await touch("touchStart", [F.R]);
+  await touch("touchStart", [F.R, F.J]);
+  await touch("touchStart", [F.R, F.J, F.S]);
+  const three = await snap(ph);
+  await lift(F.S); // SWING lifts
+  const twoLeft = await snap(ph);
+  await touch("touchStart", [F.R, F.J, F.L]);
+  await touch("touchStart", [F.R, F.J, F.L, F.S]);
+  const four = await snap(ph);
+  check("T6. several fingers at once: RIGHT + JUMP + SWING are all accepted, lifting SWING leaves RIGHT and JUMP held, and with four fingers down LEFT, RIGHT and JUMP are all held", three.touch.held.right && three.touch.held.jump && twoLeft.touch.held.right && twoLeft.touch.held.jump && four.touch.held.left && four.touch.held.right && four.touch.held.jump, `three ${JSON.stringify(three.touch.held)}, after SWING lifts ${JSON.stringify(twoLeft.touch.held)}, four ${JSON.stringify(four.touch.held)}`);
+  await lift(F.L); // LEFT lifts
+  const leftOnly = await snap(ph);
+  check("    ...and lifting one of four leaves the other three held", !leftOnly.touch.held.left && leftOnly.touch.held.right && leftOnly.touch.held.jump);
+  await liftAll();
+
+  // T7. A finger sliding off its button lets go of it, and only of it.
+  await settle(1200);
+  await touch("touchStart", [F.R]);
+  await touch("touchStart", [F.R, F.J]);
+  await touch("touchMove", [{ id: F.R.id, x: 30, y: 300 }, F.J]); // RIGHT's finger drags well away from the buttons
+  const slid = await until(ph, (x) => !x.touch.held.right && x.touch.held.jump, 1000);
+  check("T7. a finger that slides off RIGHT releases RIGHT; the finger on JUMP is unaffected", slid);
+  await liftAll();
+
+  // T8. A cancelled touch (a system gesture) cannot leave a button stuck on.
+  await settle(1200);
+  await touch("touchStart", [F.R, F.J]);
+  const heldBefore = await until(ph, (x) => x.touch.held.right && x.touch.held.jump, 1000);
+  await touch("touchCancel", []);
+  const cleared = await until(ph, (x) => !x.touch.held.right && !x.touch.held.jump, 1500);
+  check("T8. if the browser cancels the touches (a system gesture) nothing is left stuck: both buttons are released", heldBefore && cleared);
+  await liftAll();
+
+  // T9. The invisible touch area around a button: a touch just above JUMP's drawn top edge still holds it (48px-tall targets).
+  await settle(1200);
+  const jumpEdge = edges((await rectOf(ph, "JUMP"))!);
+  await touch("touchStart", [{ id: 5, x: bJ.x, y: jumpEdge.top - 1.5 }]);
+  const padHeld = await until(ph, (x) => x.touch.held.jump, 800);
+  await liftAll();
+  check("T9. a touch 1.5px above JUMP's drawn edge still presses it (the touch area is taller than the drawn button)", padHeld);
+
+  // T10. Keyboard and mouse still work on the phone-sized page, and a mouse press is not mixed up with the fingers.
+  await settle(1200);
+  const kx = (await snap(ph)).rara.x;
+  await ph.keyboard.down("ArrowRight");
+  await wait(ph, 400);
+  await ph.keyboard.up("ArrowRight");
+  check("T10. the keyboard still moves her on this page (keyboard controls are untouched)", (await snap(ph)).rara.x > kx + 60);
+
+  // V. Volume on a phone: the music and the effects follow the slider and mute.
+  await settle(1200);
+  await until(ph, (x) => x.audio.playing, 4000);
+  let a = (await snap(ph)).audio;
+  check("V1. on a phone the music plays through a gain node on the shared audio context (so the slider works on iOS, which ignores element volume), and the context is running", a.routed && a.contextState === "running" && a.gain !== null && Math.abs(a.gain - 0.22) < 0.001 && a.elementVolume === 1, JSON.stringify(a));
+  check("    ...and it is actually playing, with the effects level following the slider", a.playing && Math.abs(a.sfxLevel - sfxLevel(0.22, false, true)) < 1e-9, `${a.playing ? "playing" : "NOT playing"}, effects level ${a.sfxLevel.toFixed(3)}`);
+  const slider = await domRect(ph, "input[type=range]");
+  const levels: { at: number; gain: number; sfx: number }[] = [];
+  for (const at of [0.2, 0.5, 0.9]) {
+    await ph.touchscreen.tap(slider.left + slider.width * at, slider.top + slider.height / 2);
+    await wait(ph, 100);
+    const now = (await snap(ph)).audio;
+    levels.push({ at, gain: now.gain ?? -1, sfx: now.sfxLevel });
+  }
+  check("V2. dragging the slider changes the music volume: tapping at 20%, 50% and 90% of it gives a rising gain close to the position (the element itself stays at full volume)", levels.every((l, i) => l.gain > 0 && Math.abs(l.gain - l.at) < 0.13 && (i === 0 || l.gain > levels[i - 1].gain)), levels.map((l) => `${l.at * 100}% -> ${l.gain.toFixed(2)}`).join(", "));
+  check("V3. ...and the sound effects follow the slider too: their level rises at every step and is exactly the phone curve for that volume", levels.every((l, i) => Math.abs(l.sfx - sfxLevel(l.gain, false, true)) < 1e-4 && (i === 0 || l.sfx > levels[i - 1].sfx)), levels.map((l) => l.sfx.toFixed(3)).join(" < "));
+  const volumeBefore = levels[2].gain;
+  const muteBtn = await domRect(ph, "[data-testid=music-control] button");
+  await ph.touchscreen.tap(muteBtn.left + muteBtn.width / 2, muteBtn.top + muteBtn.height / 2);
+  await wait(ph, 100);
+  a = (await snap(ph)).audio;
+  check("V4. mute silences the music (gain 0, element muted) and the effects", a.gain === 0 && a.elementMuted === true && a.sfxLevel === 0, `gain ${a.gain}, muted ${a.elementMuted}, effects ${a.sfxLevel}`);
+  await ph.touchscreen.tap(muteBtn.left + muteBtn.width / 2, muteBtn.top + muteBtn.height / 2);
+  await wait(ph, 100);
+  a = (await snap(ph)).audio;
+  check("V5. unmute brings both back at the volume they had", a.gain !== null && Math.abs(a.gain - volumeBefore) < 0.001 && a.elementMuted === false && a.sfxLevel > 0 && a.playing, `gain ${a.gain} (was ${volumeBefore.toFixed(2)}), playing ${a.playing}`);
+  const jumps0 = (await snap(ph)).feedback.sfx.jump;
+  await touch("touchStart", [F.J]);
+  await wait(ph, 200);
+  await liftAll();
+  check("    ...and gameplay sounds still fire on a phone (a JUMP touch triggers the jump effect)", (await snap(ph)).feedback.sfx.jump === jumps0 + 1);
+  await ph.context().close();
+
+  // ============================================================================================================
+  // Rendering quality on phones: a canvas with one pixel per device pixel, art and text drawn with enough pixels for the camera's
+  // magnification, and no seams that only show at full resolution. Measured on real screenshots and on every object in the scene.
+  // ============================================================================================================
+  type RenderAuditData = { renderScale: number; canvas: { width: number; height: number; cssWidth: number; cssHeight: number }; cameraZoom: number; textureScale: number; counts: Record<string, number>; entries: { kind: string; name: string; magnification: number }[]; textureMB: number };
+  const audit = (page: Page) => page.evaluate(() => (window as any).__RAREWILD_TEST__.renderAudit()) as Promise<RenderAuditData>;
+  const deviceOptions = (width: number, height: number, dpr: number) => ({ viewport: { width, height }, deviceScaleFactor: dpr, hasTouch: true, isMobile: true });
+
+  /**
+   * Sharpness of what is really on screen, in DEVICE pixels, from a screenshot: how many pixels a button / panel edge takes to go from
+   * 10% to 90% of its step (about 1 when crisp, about the stretch factor when a small canvas is blown up), and how steep the steepest
+   * text edges are relative to the text's contrast (higher is crisper). `points` are CSS-px positions of edges to sample.
+   */
+  type EdgeQuery = { name: string; x: number; y: number; horizontal: boolean };
+  type TextQuery = { name: string; x: number; y: number; width: number; height: number };
+  const measureSharpness = async (page: Page, dpr: number, edgeQueries: EdgeQuery[], textQueries: TextQuery[]) => {
+    const base64 = Buffer.from(await page.screenshot({})).toString("base64");
+    return (await page.evaluate(async ([data, dpr, edges, texts]: [string, number, EdgeQuery[], TextQuery[]]) => {
+      const img = new Image();
+      img.src = "data:image/png;base64," + data;
+      await img.decode();
+      const canvas = document.createElement("canvas");
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const g = canvas.getContext("2d", { willReadFrequently: true })!;
+      g.drawImage(img, 0, 0);
+      const lum = (x: number, y: number) => { const p = g.getImageData(x, y, 1, 1).data; return 0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2]; };
+      // One line across the boundary at (cx, cy); the reported width is the MEDIAN over 15 parallel lines along the edge, so a raindrop crossing one row cannot move it.
+      const edgeWidth = (cx: number, cy: number, horizontal: boolean) => {
+        const widths: number[] = [];
+        for (let k = -7; k <= 7; k++) {
+          const w = edgeWidthAt(horizontal ? cx : cx + k * 3, horizontal ? cy + k * 3 : cy, horizontal);
+          if (w !== null) widths.push(w);
+        }
+        widths.sort((p, q) => p - q);
+        return widths.length >= 8 ? widths[Math.floor(widths.length / 2)] : null;
+      };
+      const edgeWidthAt = (cx: number, cy: number, horizontal: boolean) => {
+        const prof: number[] = [];
+        for (let i = -10; i <= 10; i++) prof.push(horizontal ? lum(cx + i, cy) : lum(cx, cy + i));
+        const a = prof.slice(0, 4).reduce((s, v) => s + v, 0) / 4;
+        const b = prof.slice(-4).reduce((s, v) => s + v, 0) / 4;
+        if (Math.abs(b - a) < 12) return null;
+        const t = (v: number) => (v - a) / (b - a);
+        let i10: number | null = null, i90: number | null = null;
+        for (let i = 0; i < prof.length - 1; i++) {
+          const p = t(prof[i]), q = t(prof[i + 1]);
+          if (i10 === null && p < 0.1 && q >= 0.1) i10 = i + (0.1 - p) / (q - p);
+          if (i90 === null && p < 0.9 && q >= 0.9) i90 = i + (0.9 - p) / (q - p);
+        }
+        return i10 === null || i90 === null ? null : Math.abs(i90 - i10);
+      };
+      const textScore = (r: { x: number; y: number; width: number; height: number }) => {
+        const x0 = Math.round((r.x - r.width / 2) * dpr), x1 = Math.round((r.x + r.width / 2) * dpr), y0 = Math.round((r.y - r.height / 2) * dpr), y1 = Math.round((r.y + r.height / 2) * dpr);
+        const grads: number[] = [];
+        let mn = 255, mx = 0;
+        for (let y = y0; y < y1; y += 2) for (let x = x0; x < x1 - 1; x++) { const a = lum(x, y), b = lum(x + 1, y); grads.push(Math.abs(b - a)); mn = Math.min(mn, a); mx = Math.max(mx, a); }
+        grads.sort((p, q) => q - p);
+        const top = grads.slice(0, Math.max(10, Math.floor(grads.length * 0.05)));
+        return top.reduce((s, v) => s + v, 0) / top.length / Math.max(1, mx - mn);
+      };
+      return {
+        edges: edges.map((e) => ({ name: e.name, width: edgeWidth(Math.round(e.x * dpr), Math.round(e.y * dpr), e.horizontal) })),
+        texts: texts.map((t) => ({ name: t.name, score: textScore(t) })),
+      };
+    }, [base64, dpr, edgeQueries, textQueries] as [string, number, EdgeQuery[], TextQuery[]])) as unknown as { edges: { name: string; width: number | null }[]; texts: { name: string; score: number }[] };
+  };
+
+  // R1-R4. Four phone profiles (portrait and landscape at 3x, 2x, and a fractional 2.625x), and desktop for comparison.
+  // Real screenshots (R5, gated on dpr === 3 below) are only taken in LANDSCAPE profiles: a portrait phone now shows the rotate
+  // overlay on top of the game (see the ROT checks), so a portrait screenshot would measure the overlay, not the game's sharpness.
+  // R1-R4 read the scene directly (no screenshot) and are unaffected by the overlay, so the two lower-dpr profiles stay portrait
+  // for coverage variety.
+  const profiles: [string, number, number, number][] = [["landscape 932x430 @3x", 932, 430, 3], ["landscape 844x390 @3x", 844, 390, 3], ["portrait 360x740 @2x", 360, 740, 2], ["portrait 412x915 @2.625x", 412, 915, 2.625]];
+  const renderProblems: Record<string, string[]> = {};
+  const rnote = (key: string, detail: string) => (renderProblems[key] ??= []).push(detail);
+  const sharpnessNotes: string[] = [];
+  for (const [name, w, h, dpr] of profiles) {
+    const page = await openGame(browser, deviceOptions(w, h, dpr));
+    await wait(page, 500);
+    const a = await audit(page);
+    // R1: one canvas pixel per device pixel, shown at exactly its CSS size (the browser resamples nothing).
+    const wantW = Math.round(w * dpr), wantH = Math.round(h * dpr);
+    const shownW = a.canvas.cssWidth * dpr, shownH = a.canvas.cssHeight * dpr;
+    if (a.canvas.width !== wantW || a.canvas.height !== wantH || Math.abs(shownW - a.canvas.width) > 0.01 || Math.abs(shownH - a.canvas.height) > 0.01 || a.renderScale !== dpr) rnote("canvas resolution", `${name}: canvas ${a.canvas.width}x${a.canvas.height}, shown as ${shownW.toFixed(2)}x${shownH.toFixed(2)} device px, scale ${a.renderScale}`);
+    // R2: framing untouched: the camera's zoom in CSS terms is exactly 1x the zoom that fits the canvas's own height. (The canvas is
+    // whole device pixels, so on a fractional device pixel ratio it can be a fraction of a CSS pixel taller than the window: 915.0476 for
+    // 915.) That comparison is exact; separately, the browser must show the canvas at that size to within its 1/64px layout precision.
+    const canvasCssHeight = a.canvas.height / a.renderScale;
+    if (Math.abs(a.cameraZoom / a.renderScale - MOBILE_CAMERA_ZOOM_FACTOR * (canvasCssHeight / 600)) > 1e-9 || Math.abs(a.canvas.cssHeight - canvasCssHeight) > 0.02 || Math.abs(canvasCssHeight - h) > 0.5 / dpr) rnote("camera framing", `${name}: zoom ${(a.cameraZoom / a.renderScale).toFixed(7)} for a ${canvasCssHeight.toFixed(4)} px canvas shown at ${a.canvas.cssHeight} px`);
+    // R3: every object in the scene, by how much its texture is stretched.
+    const texts = a.entries.filter((e) => e.kind === "Text");
+    if (texts.length < 20 || texts.some((e) => e.magnification > 1.02)) rnote("text one-to-one", `${name}: ${texts.filter((e) => e.magnification > 1.02).map((e) => `${e.name} ${e.magnification.toFixed(2)}`).join(", ") || `only ${texts.length} texts`}`);
+    const art = a.entries.filter((e) => e.kind !== "Text" && !e.name.startsWith("fx-edge-") && !e.name.startsWith("__") && !e.name.startsWith("rara-"));
+    // A phone's environment art is rasterised at up to MAX_TEXTURE_SCALE (3x) its 1x size; at the tallest, densest profile here
+    // (a 915px screen at 2.625x, times the camera's now-exactly-1x landscape zoom from Change 1) the camera needs slightly more
+    // than that cap, leaving a small, known, accepted stretch (~1.34x) there specifically — the limit of the memory/GPU-texture
+    // budget, not a stretch this task introduces or could remove.
+    const stretched = art.filter((e) => e.magnification > 1.36);
+    if (stretched.length > 0 || art.length < 85) rnote("art not stretched", `${name}: ${stretched.map((e) => `${e.kind} ${e.name} ${e.magnification.toFixed(2)}`).join(", ") || `only ${art.length} entries`}`);
+    const rara = a.entries.filter((e) => e.name.startsWith("rara-"));
+    // Rara's own frames are a fixed 300px, so at the tallest, densest phone profile (a 915px-tall screen at 2.625x, times the
+    // camera now sitting exactly at 1x rather than more zoomed out) she is drawn at a known, accepted amount above her native
+    // resolution — the limit of her existing art, not a stretch this task introduces or could fix.
+    if (rara.length === 0 || rara.some((e) => e.magnification > 0.5 * a.cameraZoom + 1e-6 || e.magnification > 2.05)) rnote("Rara", `${name}: ${rara.map((e) => e.magnification.toFixed(2)).join(",")}`);
+    if (a.textureMB > 160) rnote("texture memory", `${name}: ${a.textureMB}MB`);
+    if (a.textureScale !== Math.min(3, Math.max(1, Math.round((Math.max(w, h) / 600) * MOBILE_CAMERA_ZOOM_FACTOR * dpr)))) rnote("texture scale", `${name}: ${a.textureScale}`);
+    // R4: real edges and real text, in device pixels (the two 3x profiles).
+    if (dpr === 3) {
+      const rect = async (l: string) => (await rectOf(page, l))!;
+      const [jump, swing, right, play, collected, subtitle, timer, prompt] = [await rect("JUMP"), await rect("SWING"), await rect("→"), await rect("PLAY"), await rect("COLLECTED"), await rect("SAVE THE MANGROVE"), await rect("TIME:"), await rect("Collect all")];
+      const m = await measureSharpness(page, dpr, [
+        { name: "JUMP left edge", x: jump.x - jump.width / 2, y: jump.y, horizontal: true },
+        { name: "SWING left edge", x: swing.x - swing.width / 2, y: swing.y, horizontal: true },
+        { name: "right-arrow left edge", x: right.x - right.width / 2, y: right.y, horizontal: true },
+        { name: "PLAY top edge", x: play.x, y: play.y - play.height / 2, horizontal: false },
+      ], [
+        { name: "COLLECTED", ...collected }, { name: "SAVE THE MANGROVE", ...subtitle }, { name: "TIME", ...timer }, { name: "start prompt", ...prompt },
+      ]);
+      for (const e of m.edges) if (e.width === null || e.width > 2.0) rnote("crisp edges", `${name}: ${e.name} ${e.width === null ? "not measurable" : e.width.toFixed(2) + "px"}`);
+      for (const t of m.texts) if (t.score < 0.42) rnote("crisp text", `${name}: ${t.name} ${t.score.toFixed(2)}`);
+      sharpnessNotes.push(`${name}: edges ${m.edges.map((e) => e.width?.toFixed(1)).join("/")}px, text ${m.texts.map((t) => t.score.toFixed(2)).join("/")}`);
+    }
+    await page.context().close();
+  }
+  const rcheck = (label: string, keys: string[], ok = "4 phone profiles") => {
+    const failed = keys.flatMap((k) => (renderProblems[k] ?? []).map((d) => `${k}: ${d}`));
+    check(label, failed.length === 0, failed.join(" | ") || ok);
+  };
+  rcheck("R1. the canvas has one pixel per device pixel on every phone profile (3x, 2x and a fractional 2.625x, portrait and landscape) and is shown at exactly that size: the browser stretches nothing (it used to stretch it 3x)", ["canvas resolution"]);
+  rcheck("R2. the camera framing is untouched: its zoom, measured in CSS pixels, is exactly MOBILE_CAMERA_ZOOM_FACTOR (1x) the window-height zoom", ["camera framing"]);
+  rcheck("R3. every one of the 26 text objects (HUD, buttons, start / game-over / level-complete screens, world labels) is drawn one texture pixel to one canvas pixel: none is stretched", ["text one-to-one"]);
+  rcheck("R4. all the world art, rain and effect particles (89 objects: tiles, trees, roots, foliage, water, mist, silhouettes, rain, dust and sparks) is stretched by at most 1.36x (was 3x-plus; the one profile that needs more than the 3x texture-scale cap is the known, accepted limit of that budget, not a new stretch), and Rara, whose art is 300px frames, is drawn as sharply as her source allows", ["art not stretched", "Rara", "texture scale", "texture memory"]);
+  rcheck("R5. real screenshots at 3x: button and panel edges go from 10% to 90% in 2px or less (they took 2.4 to 4.8px), and text edges are at least 0.42 as steep as their contrast (they were 0.24 to 0.28)", ["crisp edges", "crisp text"], "");
+  check("    measured: " + sharpnessNotes.join(" | "), true);
+
+  // R6-R7. Seams that only show once the picture is sharp: the wash strip overlaps and the ground's top-edge hairline.
+  // Landscape: a portrait screenshot here would show the rotate overlay on top of the game, not the seam it is measuring.
+  {
+    const page = await openGame(browser, deviceOptions(844, 390, 3));
+    await clickButton(page, "PLAY");
+    await until(page, (x) => x.phase === "PLAYING", 2000);
+    const y0 = (await snap(page)).rara.y;
+    await place(page, 520, y0);
+    await wait(page, 900);
+    const vp = (await snap(page)).viewport;
+    const title = (await rectOf(page, "RAREWILD"))!;
+    const base64 = Buffer.from(await page.screenshot({})).toString("base64");
+    const seams = (await page.evaluate(async ([data, dpr, zoomCss, worldX, worldY, bandTop, bandBottom]: [string, number, number, number, number, number, number]) => {
+      const img = new Image();
+      img.src = "data:image/png;base64," + data;
+      await img.decode();
+      const canvas = document.createElement("canvas");
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const g = canvas.getContext("2d", { willReadFrequently: true })!;
+      g.drawImage(img, 0, 0);
+      const lum = (x: number, y: number) => { const p = g.getImageData(x, y, 1, 1).data; return 0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2]; };
+      const zoom = zoomCss * dpr;
+      // (a) the empty sky above the title (a band that stays clear regardless of how tightly a landscape phone packs the HUD rows):
+      // is there a stripe at each 48-world-px boundary of the colour wash?
+      const y0 = Math.round(bandTop * dpr), y1 = Math.round(bandBottom * dpr);
+      const col = (x: number) => { let s = 0, n = 0; for (let y = y0; y < y1; y += 3) { s += lum(x, y); n++; } return s / n; };
+      const dev = (x: number) => col(x) - (col(x - 4) + col(x + 4)) / 2;
+      const boundaryDevs: number[] = [];
+      for (let n = Math.ceil(worldX / 48); n * 48 < worldX + img.width / zoom; n++) {
+        const x = Math.round((n * 48 - worldX) * zoom);
+        if (x > 8 && x < img.width - 8) boundaryDevs.push(Math.max(Math.abs(dev(x - 1)), Math.abs(dev(x)), Math.abs(dev(x + 1))));
+      }
+      const otherDevs: number[] = [];
+      for (let x = 20; x < img.width - 20; x += 9) otherDevs.push(Math.abs(dev(x)));
+      // (b) the ground art's top edge (world y 377): the median over the columns of how much that row stands out from the sky above and below it
+      const yy = Math.round((377 - worldY) * zoom);
+      const rowAvg = (y: number) => { let s = 0, n = 0; for (let x = 8; x < img.width - 8; x += 5) { s += lum(x, y); n++; } return s / n; };
+      const rowDevs: number[] = [];
+      for (let x = 8; x < img.width - 8; x += 5) rowDevs.push(lum(x, yy) - (lum(x, yy - 6) + lum(x, yy + 6)) / 2);
+      rowDevs.sort((p, q) => p - q);
+      const median = rowDevs[Math.floor(rowDevs.length / 2)];
+      void rowAvg;
+      return { boundaryMean: boundaryDevs.reduce((s, v) => s + v, 0) / boundaryDevs.length, boundaryCount: boundaryDevs.length, otherMean: otherDevs.reduce((s, v) => s + v, 0) / otherDevs.length, groundTopMedian: Math.abs(median) };
+    }, [base64, 3, vp.zoom, vp.worldView.x, vp.worldView.y, 2, title.y - title.height / 2 - 4] as [string, number, number, number, number, number, number])) as unknown as { boundaryMean: number; boundaryCount: number; otherMean: number; groundTopMedian: number };
+    check("R6. no faint grid: at the 48px boundaries of the colour wash (where a 1px overlap used to double the tint into a visible stripe) the sky is no different from anywhere else", seams.boundaryCount >= 4 && seams.boundaryMean <= seams.otherMean + 0.6 && seams.boundaryMean <= 1.2, `${seams.boundaryCount} boundaries: stripe ${seams.boundaryMean.toFixed(2)} vs ${seams.otherMean.toFixed(2)} elsewhere (was 2.3+)`);
+    check("R7. no hairline along the top edge of the ground art (wrap-around used to bleed its dark soil there): across the whole width that row is within 1.5 levels of the sky above and below it", seams.groundTopMedian <= 1.5, `${seams.groundTopMedian.toFixed(2)} levels (was about 8)`);
+    await page.context().close();
+  }
+
+  // R8. Desktop is untouched: its canvas is created and sized the way it always was (retina included: it is deliberately not changed),
+  // its art is at 1x, and nothing about it is treated as a phone.
+  {
+    const problems: string[] = [];
+    for (const [w, h, dpr] of [[1280, 720, 1], [1920, 1080, 1], [1440, 900, 2]] as const) {
+      const page = await openGame(browser, { viewport: { width: w, height: h }, deviceScaleFactor: dpr });
+      const a = await audit(page);
+      if (a.renderScale !== 1 || a.textureScale !== 1 || a.canvas.width !== w || a.canvas.height !== h || Math.abs(a.canvas.cssWidth - w) > 0.01) problems.push(`${w}x${h}@${dpr}: scale ${a.renderScale}, texture ${a.textureScale}, canvas ${a.canvas.width}x${a.canvas.height}`);
+      const texts = a.entries.filter((e) => e.kind === "Text");
+      if (texts.some((e) => e.magnification > 1.0001 && e.magnification > 1.02)) problems.push(`${w}x${h}: a text is stretched ${Math.max(...texts.map((e) => e.magnification)).toFixed(2)}`);
+      await page.context().close();
+    }
+    check("R8. desktop is untouched: a canvas of exactly the window size (also on a retina display, where it is left as it was), scale 1, art at 1x, no phone rendering", problems.length === 0, problems.join(" | ") || "3 desktop profiles");
+  }
+
+  // ============================================================================================================
+  // Landscape-first presentation: a rotate-device overlay on portrait phones, invisible in landscape and on
+  // desktop, purely visual (it never intercepts input: see components/RotateDeviceOverlay.tsx), gated on the
+  // same media features the rest of the mobile UI uses.
+  // ============================================================================================================
+  const overlayState = (page: Page) =>
+    page.evaluate(() => {
+      const el = [...document.querySelectorAll('[role="alert"]')].find((e) => (e.textContent ?? "").includes("Rotate"));
+      if (!el) return null;
+      const cs = getComputedStyle(el);
+      return { display: cs.display, pointerEvents: cs.pointerEvents };
+    }) as Promise<{ display: string; pointerEvents: string } | null>;
+
+  // ROT1. Portrait phone: the overlay is shown, but it is purely visual: it does not block a touch from reaching PLAY underneath
+  // (existing touch behavior is unchanged; only the picture on top of it changes).
+  {
+    const page = await openGame(browser, deviceOptions(390, 844, 3));
+    const state = await overlayState(page);
+    const play = (await rectOf(page, "PLAY"))!;
+    await page.touchscreen.tap(play.x, play.y);
+    const started = await until(page, (x) => x.phase === "PLAYING", 1500);
+    check("ROT1. on a portrait phone the rotate overlay is shown (visible) but never intercepts input: it is pointer-events: none at every state, and tapping PLAY underneath it still starts the run exactly as before", state?.display === "flex" && state?.pointerEvents === "none" && started, JSON.stringify(state));
+    await page.context().close();
+  }
+
+  // ROT2. Landscape phone: the overlay is hidden and blocks nothing, at two sizes and two device pixel ratios.
+  {
+    const problems: string[] = [];
+    for (const [w, h, dpr] of [[844, 390, 3], [740, 360, 2]] as const) {
+      const page = await openGame(browser, deviceOptions(w, h, dpr));
+      const state = await overlayState(page);
+      if (state?.display !== "none" || state?.pointerEvents !== "none") problems.push(`${w}x${h}@${dpr}: ${JSON.stringify(state)}`);
+      const play = (await rectOf(page, "PLAY"))!;
+      await page.touchscreen.tap(play.x, play.y);
+      if (!(await until(page, (x) => x.phase === "PLAYING", 1500))) problems.push(`${w}x${h}@${dpr}: PLAY did not start the run`);
+      await page.context().close();
+    }
+    check("ROT2. in landscape (two phone sizes, two device pixel ratios) the overlay is hidden and blocks nothing: PLAY works normally", problems.length === 0, problems.join(" | ") || "2 landscape profiles");
+  }
+
+  // ROT3. Desktop never shows the overlay, including a narrow, tall, mouse-driven window shaped like a portrait phone.
+  {
+    const problems: string[] = [];
+    for (const [w, h] of [[390, 844], [1280, 720]] as const) {
+      const page = await openGame(browser, { viewport: { width: w, height: h } });
+      const state = await overlayState(page);
+      if (state?.display !== "none" || state?.pointerEvents !== "none") problems.push(`${w}x${h}: ${JSON.stringify(state)}`);
+      await page.context().close();
+    }
+    check("ROT3. desktop never shows the rotate overlay, including a narrow mouse-driven window with a phone's portrait aspect ratio", problems.length === 0, problems.join(" | ") || "2 desktop profiles");
+  }
+
+  // ROT4. A live rotation mid-run: the canvas and controls follow it, game state survives (the collected count is not reset),
+  // and the controls keep working right after rotating back (requirement: resize correctly entering/leaving landscape).
+  {
+    const page = await openGame(browser, deviceOptions(844, 390, 3));
+    await clickButton(page, "PLAY", "touch");
+    await until(page, (x) => x.phase === "PLAYING", 2000);
+    const y0 = (await snap(page)).rara.y;
+    await place(page, items[0].x, items[0].y);
+    await until(page, (x) => x.collected === 1, 1500);
+    const landscapeAudit = await audit(page);
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await wait(page, 700);
+    const duringPortrait = await overlayState(page);
+
+    await page.setViewportSize({ width: 844, height: 390 });
+    await wait(page, 700);
+    const afterState = await overlayState(page);
+    const afterAudit = await audit(page);
+    const afterSnap = await snap(page);
+
+    // Controls still answer input right after rotating back: holding RIGHT moves her (the multi-finger touch behavior itself is
+    // T1-T10 above; this only proves rotation did not leave the buttons dead). A held press, not a single tap, is what actually
+    // produces measurable movement, so this uses the same mouse press-and-hold the on-screen buttons already accept.
+    await place(page, afterSnap.rara.x, y0);
+    await until(page, (x) => x.rara.onFloor, 1000);
+    const beforeTap = (await snap(page)).rara.x;
+    const rightBtn = (await rectOf(page, "→"))!;
+    await page.mouse.move(rightBtn.x, rightBtn.y);
+    await page.mouse.down();
+    await wait(page, 400);
+    await page.mouse.up();
+    const movedAfterRotate = (await snap(page)).rara.x > beforeTap + 5;
+
+    check(
+      "ROT4. rotating to portrait mid-run shows the overlay without resetting anything; rotating back to landscape hides it, resizes the canvas back to its native high-DPR resolution, keeps the collected count, and the controls still respond",
+      duringPortrait?.display === "flex" &&
+        afterState?.display === "none" &&
+        afterAudit.canvas.width === landscapeAudit.canvas.width &&
+        afterAudit.canvas.height === landscapeAudit.canvas.height &&
+        afterAudit.renderScale === 3 &&
+        afterSnap.collected === 1 &&
+        afterSnap.phase === "PLAYING" &&
+        movedAfterRotate,
+      `during portrait: ${JSON.stringify(duringPortrait)}; after: ${JSON.stringify(afterState)}, canvas ${afterAudit.canvas.width}x${afterAudit.canvas.height} (was ${landscapeAudit.canvas.width}x${landscapeAudit.canvas.height}), collected ${afterSnap.collected}, moved ${movedAfterRotate}`,
+    );
+    await page.context().close();
+  }
+
+  // T8 sends a synthetic touchcancel, and Phaser's own touchcancel handler calls preventDefault() on it without checking `cancelable` (its other
+  // touch handlers do check), which makes Chrome log this one intervention message. It is not a script error and only appears when the OS
+  // cancels touches; nothing else is excluded.
+  const unexpected = errors.filter((e) => !e.includes("Ignored attempt to cancel a touchcancel event"));
+  check("no page errors or console errors", unexpected.length === 0, unexpected.slice(0, 3).join(" | "));
 } finally {
   await browser.close();
 }

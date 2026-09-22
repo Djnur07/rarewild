@@ -15,6 +15,12 @@ import {
  * corner. It sits outside the "Wallet & Skins" drawer and outside Phaser, and
  * only talks to the shared music player, so opening the drawer or changing
  * skins can never restart or interrupt the music.
+ *
+ * On a phone/tablet held in landscape only (matched the same way `isTouchPhone`
+ * does: `hover:none` + `pointer:coarse`, plus `orientation:landscape`), it moves
+ * to the top-left instead: the bottom-right corner there is the two-thumb control
+ * row's territory, and the timer (see Game.tsx's landscape HUD) sits well clear of
+ * the top-left, so nothing collides. Desktop and portrait phones are untouched.
  */
 export default function MusicControl() {
   const { volume, muted } = useSyncExternalStore(subscribeToMusic, getMusicState, () => DEFAULT_MUSIC_STATE);
@@ -24,7 +30,7 @@ export default function MusicControl() {
 
   return (
     <div
-      className="absolute bottom-3 right-3 z-10 flex items-center gap-2 rounded bg-black/70 px-2 py-1 font-mono text-xs text-zinc-200"
+      className="absolute bottom-3 right-3 z-10 flex items-center gap-2 rounded bg-black/70 px-2 py-1 font-mono text-xs text-zinc-200 [@media(hover:none)_and_(pointer:coarse)_and_(orientation:landscape)]:bottom-auto [@media(hover:none)_and_(pointer:coarse)_and_(orientation:landscape)]:right-auto [@media(hover:none)_and_(pointer:coarse)_and_(orientation:landscape)]:top-3 [@media(hover:none)_and_(pointer:coarse)_and_(orientation:landscape)]:left-3"
       data-testid="music-control"
     >
       <button
@@ -32,7 +38,7 @@ export default function MusicControl() {
         aria-label={silent ? "Unmute music" : "Mute music"}
         aria-pressed={silent}
         title={silent ? "Unmute music" : "Mute music"}
-        className="flex h-6 w-6 items-center justify-center rounded hover:bg-white/10"
+        className="flex h-6 w-6 items-center justify-center rounded hover:bg-white/10 [@media(hover:none)_and_(pointer:coarse)]:h-9 [@media(hover:none)_and_(pointer:coarse)]:w-9 [@media(hover:none)_and_(pointer:coarse)_and_(max-height:450px)]:h-7 [@media(hover:none)_and_(pointer:coarse)_and_(max-height:450px)]:w-7"
         onClick={(event) => {
           // Un-muting at volume 0 would still be silent, so bring the volume up as well.
           if (silent && volume === 0) setMusicVolume(0.22);
@@ -60,7 +66,7 @@ export default function MusicControl() {
         value={Math.round((muted ? 0 : volume) * 100)}
         aria-label="Music volume"
         title={`Music volume ${Math.round((muted ? 0 : volume) * 100)}%`}
-        className="h-1 w-20 cursor-pointer accent-emerald-500"
+        className="h-1 w-20 cursor-pointer accent-emerald-500 [@media(hover:none)_and_(pointer:coarse)]:h-6 [@media(hover:none)_and_(pointer:coarse)]:w-24 [@media(hover:none)_and_(pointer:coarse)_and_(max-height:450px)]:w-20"
         onChange={(event) => setMusicVolume(Number(event.target.value) / 100)}
         // Drop focus after a mouse/touch drag so the arrow keys keep steering Rara instead of nudging the slider.
         onPointerUp={(event) => event.currentTarget.blur()}

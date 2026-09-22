@@ -71,11 +71,24 @@ import {
   type FeedbackEffects,
   type MotionPreference,
 } from "@/lib/feedback";
-import { getSfxStats, playSfx } from "@/lib/audio/sfx";
+import { getMusicOutput } from "@/lib/audio/music";
+import { currentSfxLevel, getSfxStats, playSfx } from "@/lib/audio/sfx";
+import { isTouchPhone } from "@/lib/platform/touchPhone";
+import {
+  canvasSizeFor,
+  environmentTextureScale,
+  getActiveRenderScale,
+  MAX_PHONE_TEXT_RESOLUTION,
+  renderScaleFor,
+  setActiveRenderScale,
+  worldTextResolution,
+} from "@/lib/render/quality";
+import { controlSideMargin, layoutCamera, layoutTouchControls, MOBILE_HUD_TEXT_BOOST, MOBILE_WORLD_EXTENSION } from "@/lib/mobile/layout";
 import SkinSelector from "@/components/SkinSelector";
 import WalletPanel from "@/components/WalletPanel";
 import OverlayDrawer from "@/components/OverlayDrawer";
 import MusicControl from "@/components/MusicControl";
+import RotateDeviceOverlay from "@/components/RotateDeviceOverlay";
 
 /** After a catch: how long the world freezes (hit-stop) before the CAUGHT screen appears, ms. */
 const CAUGHT_HITSTOP_MS = 180;
@@ -122,7 +135,7 @@ type TestHook = {
     readyVisible: boolean;
     caughtVisible: boolean;
     completeVisible: boolean;
-    viewport: { width: number; height: number; zoom: number };
+    viewport: { width: number; height: number; zoom: number; worldView: { x: number; y: number; width: number; height: number } };
     /** The feedback effects: how much is alive, the screen-edge tints, the motion preference and the sound effects requested so far. */
     feedback: {
       active: number;
@@ -135,9 +148,27 @@ type TestHook = {
       flashing: boolean;
       sceneObjects: number;
     };
+    /** Touch controls: whether this is a phone, which on-screen buttons are held right now (by finger or mouse), and how many touch pointers exist. */
+    touch: { phone: boolean; held: { left: boolean; right: boolean; jump: boolean }; pointers: number };
+    /** What is producing the sound: the music output (gain node on a phone) and the level the sound effects would play at. */
+    audio: ReturnType<typeof getMusicOutput> & { sfxLevel: number };
   };
   buttonRect(label: string): { x: number; y: number; width: number; height: number } | null;
   placeRara(x: number, y: number): void;
+  /** Every object in the scene, with how much its texture is stretched on the canvas (see MainScene.renderAudit). */
+  renderAudit(): RenderAudit;
+};
+type AuditEntry = { kind: string; name: string; magnification: number | null };
+type RenderAudit = {
+  renderScale: number;
+  canvas: { width: number; height: number; cssWidth: number; cssHeight: number };
+  cameraZoom: number;
+  textureScale: number;
+  /** How many objects of each kind the scene holds (Text, Image, TileSprite, Sprite, Emitter, or Vector for shapes drawn with no texture). */
+  counts: Record<string, number>;
+  /** Every textured object or emitter: canvas px per texture px. Above 1 the texture is stretched, and so is softer. */
+  entries: AuditEntry[];
+  textureMB: number;
 };
 type TestWindow = Window & { __RAREWILD_TEST__?: TestHook };
 
@@ -193,6 +224,8 @@ export default function Game() {
     // double-mount, fast navigation) before it finishes. Without this guard
     // that first, abandoned instance would still start and keep running.
     let cancelled = false;
+    let resizeObserver: ResizeObserver | undefined;
+    let resizeSettleTimer: ReturnType<typeof setTimeout> | undefined;
 
     const startGame = async () => {
       if (!gameRef.current) return;
@@ -209,6 +242,16 @@ export default function Game() {
         private fx!: FeedbackEffects;
         private motion!: MotionPreference;
         private landing = new LandingDetector();
+        /** True on a phone / tablet (lib/platform/touchPhone.ts). Every mobile-only behavior below is behind it; desktop never sees it. */
+        private mobile = isTouchPhone();
+        /** Which on-screen button each finger (by pointer id) is holding, so several can be held at once. Only ever filled by touch. */
+        private touchHolds = new Map<number, "left" | "right" | "jump">();
+        /** How much larger the HUD lines are drawn: 1 on desktop, MOBILE_HUD_TEXT_BOOST on a phone. */
+        private textBoost = 1;
+        private subtitleText?: Phaser.GameObjects.Text;
+        /** How many times larger than its world size the SVG art was rasterised (1 unless it is a phone: lib/render/quality.ts). */
+        private textureScale = 1;
+        private controlButtons: { id: string; object: Phaser.GameObjects.Text }[] = [];
         /** Screen-space HUD objects with the position each has on the 800x600 design frame. */
         private hud: {
           object: Phaser.GameObjects.Text | Phaser.GameObjects.Rectangle | Phaser.GameObjects.Image;
@@ -246,11 +289,15 @@ export default function Game() {
         }
 
         preload() {
-          preloadEnvironmentAssets(this);
+          // On a phone the canvas has one pixel per device pixel, so the camera shows the world magnified: rasterise the art to match.
+          const renderScale = getActiveRenderScale();
+          this.textureScale = environmentTextureScale(this.scale.width / renderScale, this.scale.height / renderScale, renderScale, this.mobile);
+          preloadEnvironmentAssets(this, this.textureScale);
           preloadRaraAssets(this);
         }
 
         create() {
+          this.textBoost = this.mobile ? MOBILE_HUD_TEXT_BOOST : 1;
           this.cameras.main.setBackgroundColor("#10251d");
 
           this.environment = new EnvironmentLayer(this, {
@@ -260,13 +307,20 @@ export default function Game() {
             seed: ENVIRONMENT_SEED,
             zones: ENVIRONMENT_ZONES,
             waterSegments: WATER_SEGMENTS,
+            // On a phone the camera frames a little more height than the world has: carry the ground on below it (see MOBILE_WORLD_EXTENSION).
+            extendBelow: this.mobile ? MOBILE_WORLD_EXTENSION : undefined,
+            textureScale: this.textureScale,
+            crispSeams: this.mobile,
           });
 
           // Purely visual weather. Created here, before the character, so its
           // background layer is drawn behind the character (see lib/weather/rain.ts).
-          this.rain = createRainEffect(Phaser, this);
+          this.rain = createRainEffect(Phaser, this, { textureScale: this.textureScale });
+
+          // Phaser starts with ONE touch pointer; the four on-screen buttons need up to four fingers at once.
+          if (this.mobile) this.input.addPointer(3);
           this.motion = watchReducedMotion();
-          this.fx = createFeedbackEffects(this, () => this.motion.reduced);
+          this.fx = createFeedbackEffects(this, () => this.motion.reduced, this.textureScale);
 
           // Solid level geometry and pickups. Created before the character so they draw behind
           // it. The obstacles are static solids: Rara and the Hunter collide with them through
@@ -390,7 +444,12 @@ export default function Game() {
           // Safety net for press-and-hold on-screen buttons: a pointer released
           // anywhere (including outside the button it was pressed on, e.g. a
           // drag-off) always clears both flags, so movement can never get stuck on.
-          this.input.on("pointerup", () => {
+          this.input.on("pointerup", (pointer: Phaser.Input.Pointer) => {
+            if (pointer.wasTouch) {
+              // A finger only lets go of the button it was holding: the others stay held.
+              this.releaseTouch(pointer);
+              return;
+            }
             this.leftPressed = false;
             this.rightPressed = false;
             this.jumpButtonHeld = false;
@@ -443,11 +502,12 @@ export default function Game() {
             const camera = this.cameras.main;
             const { width, height } = this.scale;
             const b = object.getBounds();
+            const k = getActiveRenderScale(); // page (CSS) px: canvas px divided by the pixels per CSS px
             return {
-              x: width / 2 + (b.centerX - width / 2) * camera.zoom,
-              y: height / 2 + (b.centerY - height / 2) * camera.zoom,
-              width: b.width * camera.zoom,
-              height: b.height * camera.zoom,
+              x: (width / 2 + (b.centerX - width / 2) * camera.zoom) / k,
+              y: (height / 2 + (b.centerY - height / 2) * camera.zoom) / k,
+              width: (b.width * camera.zoom) / k,
+              height: (b.height * camera.zoom) / k,
             };
           };
           return {
@@ -468,7 +528,13 @@ export default function Game() {
                 readyVisible: this.readyOverlay.visible,
                 caughtVisible: this.caughtOverlay.visible,
                 completeVisible: this.completeOverlay.visible,
-                viewport: { width: this.scale.width, height: this.scale.height, zoom: this.cameras.main.zoom },
+                viewport: {
+                  // (page px: the canvas is `renderScale` times larger than this on a phone; see snapshot().render)
+                  width: this.scale.width / getActiveRenderScale(),
+                  height: this.scale.height / getActiveRenderScale(),
+                  zoom: this.cameras.main.zoom / getActiveRenderScale(),
+                  worldView: { x: this.cameras.main.worldView.x, y: this.cameras.main.worldView.y, width: this.cameras.main.worldView.width, height: this.cameras.main.worldView.height },
+                },
                 feedback: {
                   active: this.fx.activeCount,
                   edgeAlpha: this.fx.edgeAlpha,
@@ -479,20 +545,89 @@ export default function Game() {
                   flashing: this.cameras.main.flashEffect.isRunning,
                   sceneObjects: this.children.length,
                 },
+                touch: {
+                  phone: this.mobile,
+                  held: {
+                    left: this.leftPressed || this.touchHeld("left"),
+                    right: this.rightPressed || this.touchHeld("right"),
+                    jump: this.jumpButtonHeld || this.touchHeld("jump"),
+                  },
+                  pointers: this.input.manager.pointers.length,
+                },
+                audio: { ...getMusicOutput(), sfxLevel: currentSfxLevel() },
               };
             },
             // On-screen centre (page px) and size of the first visible text button starting with `label`.
             buttonRect: (label) => {
               const found = this.children.list.find(
-                (o): o is Phaser.GameObjects.Text => o instanceof Phaser.GameObjects.Text && o.visible && o.text.startsWith(label),
+                (o): o is Phaser.GameObjects.Text => o instanceof Phaser.GameObjects.Text && o.visible && o.scrollFactorX === 0 && o.text.startsWith(label),
               );
               return found ? screenCenter(found) : null;
             },
             // Put the centre of Rara's collision box at (x, y).
+            renderAudit: () => this.renderAudit(),
             placeRara: (x, y) => {
               const body = this.character.body as Phaser.Physics.Arcade.Body;
               body.reset(this.character.x + (x - body.center.x), this.character.y + (y - body.center.y));
             },
+          };
+        }
+
+        /**
+         * Development-only: how sharp is everything the scene draws? For each textured object this is the number of CANVAS pixels
+         * one TEXTURE pixel is stretched over (1 = one to one, below 1 = detail to spare, above 1 = stretched and therefore soft).
+         * Text: its render resolution against the size it is drawn at. Images and tile sprites: their scale times the camera zoom.
+         * Particle emitters: the camera zoom over how much larger than its 1x design their texture was drawn. Shapes drawn with no
+         * texture (obstacles, Hunters, collectibles, the buttons' outlines, panels) are vector: drawn afresh at the canvas resolution,
+         * so they have nothing to stretch. It reads the same scene the player sees, so nothing can be missed by looking at a list of names.
+         */
+        private renderAudit(): RenderAudit {
+          const zoom = this.cameras.main.zoom;
+          const counts: Record<string, number> = {};
+          const entries: AuditEntry[] = [];
+          const count = (kind: string) => (counts[kind] = (counts[kind] ?? 0) + 1);
+          const visit = (object: Phaser.GameObjects.GameObject) => {
+            if (object instanceof Phaser.GameObjects.Text) {
+              count("Text");
+              // Drawn at |scaleX| * zoom canvas px per CSS-px-of-text, from a canvas `resolution` px per CSS px: that ratio is the stretch.
+              entries.push({ kind: "Text", name: JSON.stringify(object.text.slice(0, 24)), magnification: (Math.abs(object.scaleX) * zoom) / object.style.resolution });
+            } else if (object instanceof Phaser.GameObjects.TileSprite) {
+              count("TileSprite");
+              entries.push({ kind: "TileSprite", name: object.texture.key, magnification: object.tileScaleX * Math.abs(object.scaleX) * zoom });
+            } else if (object instanceof Phaser.GameObjects.Sprite || object instanceof Phaser.GameObjects.Image) {
+              const kind = object instanceof Phaser.GameObjects.Sprite ? "Sprite" : "Image";
+              count(kind);
+              entries.push({ kind, name: object.texture.key, magnification: Math.abs(object.scaleX) * zoom });
+            } else if (object instanceof Phaser.GameObjects.Particles.ParticleEmitter) {
+              count("Emitter");
+              // Their textures are drawn `textureScale` times larger than the 1x design, and the particles scaled back by that much.
+              const source = object.texture.getSourceImage() as { width: number };
+              const logical: Record<string, number> = { "rain-streak-far": 4, "rain-streak-mid": 4, "rain-streak-near": 10, "fx-dust": 24, "fx-spark": 16 };
+              entries.push({ kind: "Emitter", name: object.texture.key, magnification: (zoom * (logical[object.texture.key] ?? source.width)) / source.width });
+            } else if (object instanceof Phaser.GameObjects.Graphics || object instanceof Phaser.GameObjects.Shape) {
+              count("Vector");
+            } else if (object instanceof Phaser.GameObjects.Container) {
+              count("Container");
+              object.list.forEach((child) => visit(child));
+            }
+          };
+          this.children.list.forEach((object) => visit(object));
+          let bytes = 0;
+          for (const key of this.textures.getTextureKeys()) {
+            if (key.startsWith("__")) continue;
+            const image = this.textures.get(key).getSourceImage() as { width: number; height: number };
+            bytes += image.width * image.height * 4;
+          }
+          const renderScale = getActiveRenderScale();
+          const box = this.game.canvas.getBoundingClientRect();
+          return {
+            renderScale,
+            canvas: { width: this.scale.width, height: this.scale.height, cssWidth: box.width, cssHeight: box.height },
+            cameraZoom: zoom,
+            textureScale: this.textureScale,
+            counts,
+            entries,
+            textureMB: +(bytes / 1048576).toFixed(1),
           };
         }
 
@@ -510,36 +645,118 @@ export default function Game() {
          * Purely presentational — no gameplay values are touched.
          */
         private layout() {
-          const width = this.scale.width;
-          const height = this.scale.height;
-          const zoom = height / DESIGN_HEIGHT;
+          // On a phone the canvas has `renderScale` pixels per CSS pixel (1 everywhere else). Everything below is designed in
+          // CSS pixels, so `width` / `height` and the zooms used for the design maths are CSS-based and keep their numbers;
+          // only where something is finally placed and how large it is drawn (`cx`, `cy`, `zoom`) is in canvas pixels.
+          const renderScale = getActiveRenderScale();
+          const cx = this.scale.width / 2;
+          const cy = this.scale.height / 2;
+          const width = this.scale.width / renderScale;
+          const height = this.scale.height / renderScale;
+          // `uiZoom` is what every screen-space layout below was designed against (the window height over the design height).
+          // The camera's own zoom equals it, except on a phone where it is a little lower to show more of the world; the
+          // screen-space objects are then scaled by `compensate` so their on-screen size and place do not change (see layoutCamera).
+          const { uiZoom, zoom: cssZoom, compensate } = layoutCamera({ height }, DESIGN_HEIGHT, this.mobile);
+          const zoom = cssZoom * renderScale; // the camera's zoom in canvas pixels per world pixel
           this.cameras.main.setZoom(zoom);
+          // TEMPORARY DIAGNOSTIC ONLY (see the same-tagged block in the Game() component above; remove together).
+          if (this.mobile && process.env.NODE_ENV !== "production") {
+            const wv = this.cameras.main.worldView;
+            console.log("[RAREWILD DIAG] MainScene.layout()", {
+              t: Math.round(performance.now()),
+              orientation: width > height ? "landscape" : "portrait",
+              scaleWH: `${this.scale.width}x${this.scale.height}`,
+              cssWH: `${width}x${height}`,
+              renderScale,
+              uiZoom,
+              cssZoom,
+              compensate,
+              appliedZoom: zoom,
+              cameraZoomReadBack: this.cameras.main.zoom,
+              worldView: { x: wv.x, y: wv.y, w: wv.width, h: wv.height },
+              canvasBoundingRect: (() => {
+                const r = this.game.canvas.getBoundingClientRect();
+                return { w: r.width, h: r.height };
+              })(),
+            });
+          }
           // The area a scroll-factor-0 object can see, in camera-local coordinates: the rain fills exactly this.
           this.rain?.resize({
-            left: width / 2 - width / (2 * zoom),
-            top: height / 2 - height / (2 * zoom),
-            width: width / zoom,
-            height: height / zoom,
+            left: cx - this.scale.width / (2 * zoom),
+            top: cy - this.scale.height / (2 * zoom),
+            width: this.scale.width / zoom,
+            height: this.scale.height / zoom,
           });
 
-          const hudScale = Math.min(1, width / zoom / DESIGN_WIDTH);
-          this.hudScale = hudScale;
-          // Render text at the on-screen size so the zoom doesn't blur it.
-          const textResolution = Math.min(4, Math.max(1, zoom * hudScale));
+          const hudScale = Math.min(1, width / uiZoom / DESIGN_WIDTH);
+          const localScale = hudScale * compensate; // the scale in camera-local px: on screen it is zoom * localScale = uiZoom * hudScale (x renderScale in canvas px)
+          this.hudScale = localScale;
+          // Render text with exactly as many texture pixels as it is drawn with canvas pixels, so nothing is stretched or shrunk into blur.
+          const maxTextResolution = renderScale === 1 ? 4 : MAX_PHONE_TEXT_RESOLUTION;
+          const textResolution = Math.min(maxTextResolution, Math.max(1, zoom * localScale));
           for (const { object, x, y } of this.hud) {
             object.setPosition(
-              width / 2 + (x - DESIGN_WIDTH / 2) * hudScale,
-              height / 2 + (y - DESIGN_HEIGHT / 2),
+              cx + (x - DESIGN_WIDTH / 2) * localScale,
+              cy + (y - DESIGN_HEIGHT / 2) * compensate,
             );
-            if (object === this.portrait) object.setDisplaySize(PORTRAIT_SIZE * hudScale, PORTRAIT_SIZE * hudScale);
-            else object.setScale(hudScale);
+            if (object === this.portrait) object.setDisplaySize(PORTRAIT_SIZE * localScale, PORTRAIT_SIZE * localScale);
+            else object.setScale(localScale);
             if (object instanceof Phaser.GameObjects.Text) object.setResolution(textResolution);
           }
-          const view = { width, height, hudScale, textResolution, zoom };
+          if (this.mobile) this.layoutMobile(width, height, cx, cy, uiZoom, cssZoom, zoom, localScale);
+          const view = { width: this.scale.width, height: this.scale.height, hudScale: localScale, textResolution, zoom };
           this.caughtOverlay?.layout(view);
           this.completeOverlay?.layout(view);
           this.readyOverlay?.layout(view);
-          this.fx?.layout({ width, height, zoom });
+          this.fx?.layout({ width: this.scale.width, height: this.scale.height, zoom });
+        }
+
+        /**
+         * PHONES ONLY (desktop never calls this): draw the HUD lines under the title a little larger, and the four
+         * control buttons larger and centred as one group, on top of the shared layout above. The buttons keep their
+         * order, spacing and row; only their size and the group's position change (see lib/mobile/layout.ts).
+         */
+        private layoutMobile(width: number, height: number, cx: number, cy: number, uiZoom: number, cssZoom: number, zoom: number, hudScale: number) {
+          this.subtitleText ??= this.hud.find(({ object }) => object instanceof Phaser.GameObjects.Text && object.text === "SAVE THE MANGROVE")?.object as Phaser.GameObjects.Text | undefined;
+          const lines = [this.subtitleText, this.counterText, this.timerText, this.exitStatusText];
+          for (const text of lines) text?.setScale(hudScale * this.textBoost).setResolution(Math.min(MAX_PHONE_TEXT_RESOLUTION, Math.max(1, zoom * hudScale * this.textBoost)));
+
+          // LANDSCAPE ONLY: the timer moves up to share the subtitle's row, near the left edge, instead of pairing with the
+          // exit status below the counter (RAREWILD and SAVE THE MANGROVE stay exactly where they always were). Portrait
+          // restores the timer's original position and right-aligned origin, so a rotation back to portrait is never left
+          // with the landscape placement (see MainScene.layout, which calls this every resize).
+          const landscapeHud = width > height;
+          const compensate = uiZoom / cssZoom; // the CSS-space camera zoom, not `zoom` (which is already multiplied by the device pixel ratio)
+          const timerDesign = this.hud.find((h) => h.object === this.timerText)!;
+          if (landscapeHud && this.subtitleText) {
+            const subtitleDesign = this.hud.find((h) => h.object === this.subtitleText)!;
+            // The X target is a real CSS-pixel edge margin (the same convention the controls use), converted like the controls
+            // are: dividing by cssZoom, not multiplying by the design-frame scale. That "*scale" approach (used for Y, and for
+            // every other HUD line, which all sit close to the design frame's own centre) shrinks a LARGE offset from centre
+            // disproportionately once cssZoom is not 1, since the whole 800x600 frame is scaled around its centre as one block;
+            // it only ever looked right before because nothing else was ever moved this far from that centre.
+            const targetLeftCss = controlSideMargin(width);
+            this.timerText.setOrigin(0, 0.5).setPosition(cx + (targetLeftCss - width / 2) / cssZoom, cy + (subtitleDesign.y - DESIGN_HEIGHT / 2) * compensate);
+          } else {
+            this.timerText.setOrigin(1, 0.5).setPosition(cx + (timerDesign.x - DESIGN_WIDTH / 2) * hudScale, cy + (timerDesign.y - DESIGN_HEIGHT / 2) * compensate);
+          }
+
+          const designs = this.controlButtons.map(({ id, object }) => {
+            const entry = this.hud.find((h) => h.object === object)!;
+            return { id, x: entry.x, y: entry.y, width: object.width, height: object.height };
+          });
+          const placements = layoutTouchControls({ width, height, zoom: uiZoom, designHeight: DESIGN_HEIGHT, groundDesignY: GROUND_SURFACE_Y }, designs);
+          for (const placement of placements) {
+            const object = this.controlButtons.find((b) => b.id === placement.id)!.object;
+            // A scroll-factor-0 object is drawn `cssZoom` times larger (in CSS px) around the window centre, so CSS px map to local px by / cssZoom.
+            // Its texture gets one pixel per canvas pixel it is drawn with: placement.scale CSS px per design px, times the pixels per CSS px.
+            object
+              .setPosition(cx + (placement.screenX - width / 2) / cssZoom, cy + (placement.screenY - height / 2) / cssZoom)
+              .setScale(placement.scale / cssZoom)
+              .setResolution(Math.min(MAX_PHONE_TEXT_RESOLUTION, Math.max(1, placement.scale * (zoom / cssZoom))));
+            // The button answers touches over a taller area than it is drawn when it would otherwise be under a thumb-sized target.
+            (object.input?.hitArea as Phaser.Geom.Rectangle | undefined)?.setTo(0, -placement.hitPadY, object.width, object.height + 2 * placement.hitPadY);
+          }
         }
 
         /** Skins are purely cosmetic: this never touches movement, animation state, or collisions. */
@@ -574,12 +791,32 @@ export default function Game() {
           this.registerHud(this.portrait);
         }
 
+        /**
+         * PHONES ONLY. The portrait art is 800px and the HUD shows it at about 130 device px: the GPU shrinks it without any
+         * averaging, which leaves it noisy. This returns a copy the browser's high-quality resampler has already shrunk to a size
+         * that is still 1.5x or more the largest the HUD draws it at, so what the GPU does is a mild, clean reduction.
+         */
+        private sharpPortraitKey(key: string): string {
+          const hdKey = `${key}-hd`;
+          if (this.textures.exists(hdKey)) return hdKey;
+          const source = this.textures.get(key).getSourceImage() as CanvasImageSource & { width: number; height: number };
+          const size = Math.min(source.width, 320);
+          const copy = this.textures.createCanvas(hdKey, size, size);
+          if (!copy) return key;
+          const context = copy.getContext();
+          context.imageSmoothingEnabled = true;
+          context.imageSmoothingQuality = "high";
+          context.drawImage(source, 0, 0, source.width, source.height, 0, 0, size, size);
+          copy.refresh();
+          return hdKey;
+        }
+
         /** Show the selected token's artwork (loaded on demand, only for this token); hide it for the default skin. */
         private async showPortrait(skin: RareWildSkin, request: number) {
           const key = await ensureSkinPortrait(this, skin);
           if (!this.alive || request !== this.skinRequest) return; // scene closed or a newer skin was picked
           const visible = key !== null;
-          if (key) this.portrait.setTexture(key).setDisplaySize(PORTRAIT_SIZE * this.hudScale, PORTRAIT_SIZE * this.hudScale);
+          if (key) this.portrait.setTexture(this.mobile ? this.sharpPortraitKey(key) : key).setDisplaySize(PORTRAIT_SIZE * this.hudScale, PORTRAIT_SIZE * this.hudScale);
           this.portrait.setVisible(visible);
           this.portraitFrame.setVisible(visible);
         }
@@ -588,10 +825,11 @@ export default function Game() {
           // On the start screen no input reaches her: the motor is locked too, this also keeps her from turning to face a held key.
           const ready = this.objective.phase === "READY";
           const keyboardX = ready ? 0 : this.keyboardInput.readDirection();
-          const left = keyboardX < 0 || this.leftPressed;
-          const right = keyboardX > 0 || this.rightPressed;
+          this.pruneTouchHolds();
+          const left = keyboardX < 0 || this.leftPressed || this.touchHeld("left");
+          const right = keyboardX > 0 || this.rightPressed || this.touchHeld("right");
           const moveX = left === right ? 0 : left ? -1 : 1;
-          const jumpHeld = !ready && (this.keyboardInput.isJumpHeld() || this.jumpButtonHeld);
+          const jumpHeld = !ready && (this.keyboardInput.isJumpHeld() || this.jumpButtonHeld || this.touchHeld("jump"));
 
           const frame = this.motor.update({ moveX, jumpHeld }, delta, time);
           if (moveX !== 0) this.character.setFacing(moveX);
@@ -634,6 +872,29 @@ export default function Game() {
           this.fx.update(delta);
         }
 
+        /** Is a finger holding this on-screen button? (Touch only: a mouse press uses the flags.) */
+        private touchHeld(button: "left" | "right" | "jump"): boolean {
+          for (const held of this.touchHolds.values()) if (held === button) return true;
+          return false;
+        }
+
+        /** A finger went down on an on-screen button. Each finger is tracked by its own pointer id, so buttons can be held together. */
+        private holdTouch(pointer: Phaser.Input.Pointer, button: "left" | "right" | "jump") {
+          if (this.objective.phase === "READY") return; // the start screen: PLAY first
+          this.touchHolds.set(pointer.id, button);
+          if (button === "jump") this.motor.queueJump(this.time.now);
+        }
+
+        /** That finger lifted or slid off its button: it lets go of what IT was holding, and nothing else. */
+        private releaseTouch(pointer: Phaser.Input.Pointer) {
+          this.touchHolds.delete(pointer.id);
+        }
+
+        /** Safety net: forget any finger the browser no longer reports as down (a cancelled touch, e.g. by a system gesture, never sends a release). */
+        private pruneTouchHolds() {
+          for (const id of this.touchHolds.keys()) if (!this.input.manager.pointers[id]?.isDown) this.touchHolds.delete(id);
+        }
+
         /** The item counter changed: update the HUD, and open the exit when the last item is collected. */
         private onCollected() {
           this.updateCounter(true);
@@ -658,6 +919,7 @@ export default function Game() {
           this.leftPressed = false;
           this.rightPressed = false;
           this.jumpButtonHeld = false;
+          this.touchHolds.clear();
           this.oneShotActive = true;
           this.character.setAnimationState("collect");
           this.updateTimerText();
@@ -689,8 +951,8 @@ export default function Game() {
             to: 1.3,
             duration: 110,
             yoyo: true,
-            onUpdate: (tween) => this.exitStatusText.setScale(this.hudScale * tween.getValue()!),
-            onComplete: () => this.exitStatusText.setScale(this.hudScale),
+            onUpdate: (tween) => this.exitStatusText.setScale(this.hudScale * this.textBoost * tween.getValue()!),
+            onComplete: () => this.exitStatusText.setScale(this.hudScale * this.textBoost),
           });
         }
 
@@ -704,8 +966,8 @@ export default function Game() {
             to: 1.3,
             duration: 90,
             yoyo: true,
-            onUpdate: (tween) => this.counterText.setScale(this.hudScale * tween.getValue()!),
-            onComplete: () => this.counterText.setScale(this.hudScale),
+            onUpdate: (tween) => this.counterText.setScale(this.hudScale * this.textBoost * tween.getValue()!),
+            onComplete: () => this.counterText.setScale(this.hudScale * this.textBoost),
           });
         }
 
@@ -754,6 +1016,7 @@ export default function Game() {
           this.leftPressed = false;
           this.rightPressed = false;
           this.jumpButtonHeld = false;
+          this.touchHolds.clear();
           this.updateTimerText();
         }
 
@@ -778,6 +1041,7 @@ export default function Game() {
           this.leftPressed = false;
           this.rightPressed = false;
           this.jumpButtonHeld = false;
+          this.touchHolds.clear();
           this.seed.setPosition(SEED_X, GROUND_Y).setVisible(true);
           this.hazardCooldownUntil = 0;
           this.fx.clear(); // no effect outlives the run it belonged to
@@ -817,6 +1081,7 @@ export default function Game() {
               fontSize: "18px",
               color: "#9ee493",
             })
+            .setResolution(worldTextResolution(1, this.scale.width, this.scale.height)) // 1, as always, off a phone
             .setOrigin(0.5);
 
           this.tweens.add({
@@ -966,44 +1231,63 @@ export default function Game() {
           // frame (same mechanism as the keyboard), pointerup/pointerout clear
           // it. Not "click" — a single tap without holding produces no movement
           // beyond whatever polls happen while the pointer is actually down.
-          leftButton.on("pointerdown", () => {
-            this.leftPressed = this.objective.phase !== "READY";
+          // Each handler has two paths: a finger is tracked by its pointer id (see holdTouch); a mouse keeps the single flag it always had.
+          leftButton.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
+            if (pointer.wasTouch) this.holdTouch(pointer, "left");
+            else this.leftPressed = this.objective.phase !== "READY";
           });
-          leftButton.on("pointerup", () => {
-            this.leftPressed = false;
+          leftButton.on("pointerup", (pointer: Phaser.Input.Pointer) => {
+            if (pointer.wasTouch) this.releaseTouch(pointer);
+            else this.leftPressed = false;
           });
-          leftButton.on("pointerout", () => {
-            this.leftPressed = false;
+          leftButton.on("pointerout", (pointer: Phaser.Input.Pointer) => {
+            if (pointer.wasTouch) this.releaseTouch(pointer);
+            else this.leftPressed = false;
           });
 
-          rightButton.on("pointerdown", () => {
-            this.rightPressed = this.objective.phase !== "READY";
+          rightButton.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
+            if (pointer.wasTouch) this.holdTouch(pointer, "right");
+            else this.rightPressed = this.objective.phase !== "READY";
           });
-          rightButton.on("pointerup", () => {
-            this.rightPressed = false;
+          rightButton.on("pointerup", (pointer: Phaser.Input.Pointer) => {
+            if (pointer.wasTouch) this.releaseTouch(pointer);
+            else this.rightPressed = false;
           });
-          rightButton.on("pointerout", () => {
-            this.rightPressed = false;
+          rightButton.on("pointerout", (pointer: Phaser.Input.Pointer) => {
+            if (pointer.wasTouch) this.releaseTouch(pointer);
+            else this.rightPressed = false;
           });
 
           // Same press-and-hold contract as the keyboard: the press queues a jump
           // once, holding it keeps the jump high, releasing it early cuts the jump short.
-          jumpButton.on("pointerdown", () => {
+          jumpButton.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
+            if (pointer.wasTouch) {
+              this.holdTouch(pointer, "jump");
+              return;
+            }
             if (this.objective.phase === "READY") return; // the start screen: PLAY first
             this.jumpButtonHeld = true;
             this.motor.queueJump(this.time.now);
           });
-          jumpButton.on("pointerup", () => {
-            this.jumpButtonHeld = false;
+          jumpButton.on("pointerup", (pointer: Phaser.Input.Pointer) => {
+            if (pointer.wasTouch) this.releaseTouch(pointer);
+            else this.jumpButtonHeld = false;
           });
-          jumpButton.on("pointerout", () => {
-            this.jumpButtonHeld = false;
+          jumpButton.on("pointerout", (pointer: Phaser.Input.Pointer) => {
+            if (pointer.wasTouch) this.releaseTouch(pointer);
+            else this.jumpButtonHeld = false;
           });
 
           swingButton.on("pointerdown", () => {
             this.swing();
           });
 
+          this.controlButtons = [
+            { id: "left", object: leftButton },
+            { id: "right", object: rightButton },
+            { id: "swing", object: swingButton },
+            { id: "jump", object: jumpButton },
+          ];
           for (const button of [leftButton, rightButton, jumpButton, swingButton]) {
             this.registerHud(button);
             button.on("pointerover", () => {
@@ -1017,20 +1301,118 @@ export default function Game() {
         }
       }
 
+      // PHONE: the canvas gets one pixel per DEVICE pixel (a 390x844 window on a devicePixelRatio-3 phone is a 1170x2532
+      // canvas), shown at exactly its CSS size, so the browser does not stretch (and blur) it. Phaser has no such mode of its
+      // own (its RESIZE mode sizes the canvas in CSS pixels), so the phone uses a fixed-size canvas that follows its container
+      // (see lib/render/quality.ts). Everything else is exactly the configuration the game has always had.
+      const phone = isTouchPhone();
+      const container = gameRef.current;
+      const cssBox = () => {
+        const box = container.getBoundingClientRect();
+        return { width: box.width || window.innerWidth, height: box.height || window.innerHeight };
+      };
+      const phoneScale = () => {
+        const box = cssBox();
+        const scale = renderScaleFor(box.width, box.height, window.devicePixelRatio || 1, true);
+        return { box, scale, canvas: canvasSizeFor(box.width, box.height, scale) };
+      };
+      const start = phone ? phoneScale() : null;
+      if (start) setActiveRenderScale(start.scale);
+      // TEMPORARY DIAGNOSTIC ONLY — logs the values needed to find the mobile-landscape black-screen bug (see the
+      // conversation this was added for). Read-only: it changes nothing about behavior, only what is printed to the
+      // console. Remove this whole block (and the `diag` calls it enables below) once that bug is fixed.
+      const diag =
+        phone && process.env.NODE_ENV !== "production"
+          ? (label: string) => {
+              const canvas = game?.canvas;
+              const canvasRect = canvas?.getBoundingClientRect();
+              const containerRect = container.getBoundingClientRect();
+              const cs = canvas ? getComputedStyle(canvas) : null;
+              console.log(`[RAREWILD DIAG] ${label}`, {
+                t: Math.round(performance.now()),
+                orientation: window.innerWidth > window.innerHeight ? "landscape" : "portrait",
+                windowInnerWH: `${window.innerWidth}x${window.innerHeight}`,
+                docClientWH: `${document.documentElement.clientWidth}x${document.documentElement.clientHeight}`,
+                devicePixelRatio: window.devicePixelRatio,
+                containerRect: containerRect && { w: containerRect.width, h: containerRect.height },
+                canvasBoundingRect: canvasRect && { w: canvasRect.width, h: canvasRect.height, top: canvasRect.top, left: canvasRect.left },
+                canvasAttrWH: canvas && `${canvas.width}x${canvas.height}`,
+                canvasStyleWH: cs && `${cs.width} x ${cs.height}`,
+                canvasDisplayVisibilityOpacity: cs && `${cs.display} / ${cs.visibility} / ${cs.opacity}`,
+                scaleWH: game && `${game.scale.width}x${game.scale.height}`,
+                scaleZoom: game?.scale.zoom,
+                activeRenderScale: getActiveRenderScale(),
+              });
+            }
+          : null;
       game = new Phaser.Game({
         type: Phaser.AUTO,
-        // The canvas always matches its container (which fills the window).
-        scale: { mode: Phaser.Scale.RESIZE, width: "100%", height: "100%" },
+        scale: start
+          ? { mode: Phaser.Scale.NONE, width: start.canvas.width, height: start.canvas.height, zoom: 1 / start.scale }
+          : // The canvas always matches its container (which fills the window).
+            { mode: Phaser.Scale.RESIZE, width: "100%", height: "100%" },
+        // Textures are drawn at whole-pixel positions on a phone (one canvas pixel is one device pixel there, so no sub-pixel
+        // sampling softness); off a phone this is Phaser's default and nothing changes.
+        ...(phone ? { render: { roundPixels: true } } : {}),
         parent: gameRef.current,
         physics: { default: "arcade", arcade: { gravity: { x: 0, y: DEFAULT_MOVEMENT_CONFIG.gravity } } },
         scene: MainScene,
       });
+      diag?.("boot");
+      if (phone) {
+        // Phaser's ScaleManager runs its OWN `window: "resize"` / `orientationchange` DOM listeners in parallel with
+        // whatever the app does (see node_modules/phaser/src/scale/ScaleManager.js: startListeners/windowResize):
+        // on a native `resize` event (which mobile Safari fires, repeatedly, all through a rotation) it calls
+        // `refresh()` immediately and completely undebounced, before this component's own resize below ever runs.
+        // That leaves the ScaleManager's backing-store size (`baseSize`, still the old orientation) and its freshly
+        // re-measured CSS bounds (`canvasBounds`, already reflowed for the new one) briefly inconsistent, and
+        // `Scale.Events.RESIZE` fires from it too, so `MainScene.layout()` can run against that inconsistent state.
+        // Debouncing this component's own resize couldn't fix that: it only affected this path, not Phaser's own.
+        // The phone canvas size is driven entirely by the ResizeObserver below instead, so Phaser's own copy of the
+        // same job is turned off here; the `Scale.Events.RESIZE` event this component listens on keeps firing
+        // exactly as before, just only from the (now single) explicit `resize()` call.
+        game.scale.stopListeners();
+        // Follow the container (rotation, the browser's toolbars): a new canvas size, and the pixels-per-CSS-pixel with it.
+        // A rotation fires several of these in quick succession while the OS animates it (the browser chrome collapsing,
+        // the viewport settling), and applying every one live would call `game.scale.resize()` (which resets the canvas's
+        // width/height and so clears its drawing buffer, same as any HTML canvas) that many times in a row, faster than
+        // Phaser can redraw between them: the screen can go black for the rest of the transition. So the resize itself is
+        // debounced to once the size has stopped changing for RESIZE_SETTLE_MS, using whatever the size is by then.
+        let last = `${start!.canvas.width}x${start!.canvas.height}@${start!.scale}`;
+        const RESIZE_SETTLE_MS = 120;
+        const follow = () => {
+          if (cancelled || !game) return;
+          diag?.("observer-tick (raw, pre-debounce)");
+          if (resizeSettleTimer !== undefined) clearTimeout(resizeSettleTimer);
+          resizeSettleTimer = setTimeout(() => {
+            resizeSettleTimer = undefined;
+            if (cancelled || !game) return;
+            const now = phoneScale();
+            const key = `${now.canvas.width}x${now.canvas.height}@${now.scale}`;
+            if (key === last) return;
+            last = key;
+            diag?.("pre-resize (debounce settled)");
+            setActiveRenderScale(now.scale);
+            game.scale.setZoom(1 / now.scale);
+            game.scale.resize(now.canvas.width, now.canvas.height);
+            diag?.("post-resize (synchronous)");
+            // Two rAF ticks out: after the browser has actually painted the post-resize frame(s), so a bug that
+            // only shows up once things have "settled" (a bad state that persists rather than a one-frame flash)
+            // is visible here too, not just in the synchronous log right above.
+            requestAnimationFrame(() => requestAnimationFrame(() => diag?.("settled (+2 rAF)")));
+          }, RESIZE_SETTLE_MS);
+        };
+        resizeObserver = new ResizeObserver(follow);
+        resizeObserver.observe(container);
+      }
     };
 
     startGame();
 
     return () => {
       cancelled = true;
+      resizeObserver?.disconnect();
+      if (resizeSettleTimer !== undefined) clearTimeout(resizeSettleTimer);
       if (game) {
         game.destroy(true);
       }
@@ -1039,12 +1421,13 @@ export default function Game() {
 
   return (
     <div className="relative h-full w-full">
-      <div ref={gameRef} className="absolute inset-0 overflow-hidden [&>canvas]:block" />
+      <div ref={gameRef} className="absolute inset-0 overflow-hidden [&>canvas]:block [@media(hover:none)_and_(pointer:coarse)]:touch-none" />
       <OverlayDrawer label="Wallet & Skins">
         <SkinSelector activeSkin={activeSkin} notice={notice} onSelect={selectSkin} />
         <WalletPanel activeSkin={activeSkin} onSelectToken={(tokenId) => void selectSkin(tokenId)} />
       </OverlayDrawer>
       <MusicControl />
+      <RotateDeviceOverlay />
     </div>
   );
 }

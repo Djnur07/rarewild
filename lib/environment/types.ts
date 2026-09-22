@@ -53,6 +53,24 @@ export interface EnvironmentBuildOptions {
    * them; when omitted the original fixed 2400px composition is used.
    */
   zones?: readonly EnvironmentZone[];
+  /**
+   * How far below `worldHeight` the ground art is carried on, world px (default 0: the world ends where it always did). A
+   * camera that frames more height than the world has (the phone camera) would otherwise show empty space there; the ground
+   * is extended with its own soil, and the zone colour wash covers the extension too. Decoration only: no physics.
+   */
+  extendBelow?: number;
+  /**
+   * How many times larger than its world size the art has been rasterised (default 1; see lib/render/quality.ts). The layer
+   * scales every image and tile sprite back down by this amount, so nothing moves or changes size, it only has more pixels.
+   */
+  textureScale?: number;
+  /**
+   * Phone only (default false; see lib/render/quality.ts). At full device resolution two seams that the old, stretched
+   * rendering hid become visible hairlines, so this removes them: the zone colour wash strips are drawn edge to edge
+   * instead of overlapping by 1px (the overlap is a double tint), and the ground tile's last rows are made transparent so
+   * texture wrap-around cannot bleed its dark bottom soil onto the top edge of the ground (the extension below supplies the soil).
+   */
+  crispSeams?: boolean;
   /** Pools of water. Defaults to the single original pool at x 680-920. */
   waterSegments?: readonly WaterSegment[];
 }

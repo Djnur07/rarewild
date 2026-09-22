@@ -11,6 +11,7 @@
 import type Phaser from "phaser";
 import { BOB_AMPLITUDE, BOB_PERIOD_MS } from "./config.ts";
 import type { CollectibleView } from "./CollectibleView.ts";
+import { worldTextResolution } from "../render/quality.ts";
 
 const GOLD = 0xffd23f;
 const DEPTH_TEXT = 560; // over the mid rain layer (500), under the foreground rain (600) and the HUD (1000)
@@ -55,7 +56,7 @@ export function createPlaceholderCollectibleView(scene: Phaser.Scene, x: number,
       const plusOne = scene.add
         .text(x, y - radius, "+1", { fontSize: "22px", fontStyle: "bold", color: "#ffd23f", stroke: "#000000", strokeThickness: 4 })
         .setOrigin(0.5)
-        .setResolution(2)
+        .setResolution(worldTextResolution(2, scene.scale.width, scene.scale.height))
         .setDepth(DEPTH_TEXT);
       scene.tweens.add({ targets: plusOne, y: y - radius - 42, alpha: 0, duration: 650, ease: "Cubic.easeOut", onComplete: () => plusOne.destroy() });
     },

@@ -10,6 +10,7 @@
 import type Phaser from "phaser";
 import type { Rect } from "../level/geometry.ts";
 import type { ExitView } from "./ExitView.ts";
+import { worldTextResolution } from "../render/quality.ts";
 
 const LABEL_DEPTH = 550; // above the mid rain layer (500), below the foreground rain (600) and the HUD (1000)
 const REJECT_COOLDOWN_MS = 1400;
@@ -25,7 +26,7 @@ export function createPlaceholderExitView(scene: Phaser.Scene, box: Rect): ExitV
   const label = scene.add
     .text(cx, box.top - 20, "", { fontSize: "16px", fontStyle: "bold", color: "#ff8a75", stroke: "#000000", strokeThickness: 4 })
     .setOrigin(0.5)
-    .setResolution(2)
+    .setResolution(worldTextResolution(2, scene.scale.width, scene.scale.height))
     .setDepth(LABEL_DEPTH);
 
   let isOpen = false;
@@ -97,7 +98,7 @@ export function createPlaceholderExitView(scene: Phaser.Scene, box: Rect): ExitV
           strokeThickness: 5,
         })
         .setOrigin(0.5)
-        .setResolution(2)
+        .setResolution(worldTextResolution(2, scene.scale.width, scene.scale.height))
         .setDepth(LABEL_DEPTH);
       scene.tweens.add({ targets: note, y: note.y - 18, alpha: { from: 1, to: 0 }, delay: 700, duration: 900, onComplete: () => note.destroy() });
     },

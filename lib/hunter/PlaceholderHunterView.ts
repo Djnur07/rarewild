@@ -16,6 +16,7 @@ import type Phaser from "phaser";
 import type { HunterConfig } from "./config.ts";
 import type { HunterView } from "./HunterView.ts";
 import type { HunterState } from "./types.ts";
+import { worldTextResolution } from "../render/quality.ts";
 
 const INDICATOR_DEPTH = 550; // above the mid rain layer (500), below the foreground rain (600) and the HUD (1000)
 const INDICATOR_OFFSET_Y = 26; // px above the top of the Hunter's body
@@ -58,7 +59,7 @@ export function createPlaceholderHunterView(scene: Phaser.Scene, config: HunterC
     .text(0, 0, "!", { fontSize: "34px", fontStyle: "bold", color: "#ffffff", stroke: "#000000", strokeThickness: 5 })
     .setOrigin(0.5)
     .setDepth(INDICATOR_DEPTH)
-    .setResolution(2)
+    .setResolution(worldTextResolution(2, scene.scale.width, scene.scale.height))
     .setVisible(false);
 
   /** What is currently drawn: the state, or "CAUGHT" (Hunter standing down: no indicator, no detection area). */

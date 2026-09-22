@@ -19,6 +19,8 @@
     "obstacles:validate": "node scripts/obstacles/validate-obstacles.ts",
     "collectibles:validate": "node scripts/collectibles/validate-collectibles.ts",
     "feedback:validate": "node scripts/feedback/validate-feedback.ts",
+    "mobile:validate": "node scripts/mobile/validate-mobile.ts",
+    "render:validate": "node scripts/render/validate-render.ts",
     "browser:test": "node scripts/browser/verify-start-screen.ts"
   },
   "dependencies": {

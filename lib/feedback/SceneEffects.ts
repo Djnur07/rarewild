@@ -75,8 +75,9 @@ export interface FeedbackEffects {
 }
 
 /** A soft round dot in one colour, drawn once onto a small canvas texture (no image files). */
-function createDotTexture(scene: Phaser.Scene, key: string, size: number, rgb: string) {
+function createDotTexture(scene: Phaser.Scene, key: string, logicalSize: number, rgb: string, k: number) {
   if (scene.textures.exists(key)) return;
+  const size = logicalSize * k; // drawn k times larger on a phone so the magnifying camera does not blur it (the particles are scaled back by 1/k)
   const texture = scene.textures.createCanvas(key, size, size);
   if (!texture) return;
   const c = texture.getContext();
@@ -105,9 +106,10 @@ function createEdgeTexture(scene: Phaser.Scene, key: string, rgb: string) {
   texture.refresh();
 }
 
-export function createFeedbackEffects(scene: Phaser.Scene, isReducedMotion: () => boolean): FeedbackEffects {
-  createDotTexture(scene, "fx-dust", 24, "232, 224, 200");
-  createDotTexture(scene, "fx-spark", 16, "255, 210, 63");
+export function createFeedbackEffects(scene: Phaser.Scene, isReducedMotion: () => boolean, textureScale = 1): FeedbackEffects {
+  const k = textureScale;
+  createDotTexture(scene, "fx-dust", 24, "232, 224, 200", k);
+  createDotTexture(scene, "fx-spark", 16, "255, 210, 63", k);
   createEdgeTexture(scene, "fx-edge-red", "255, 58, 32");
   createEdgeTexture(scene, "fx-edge-gold", "255, 214, 90");
 
@@ -118,7 +120,7 @@ export function createFeedbackEffects(scene: Phaser.Scene, isReducedMotion: () =
       speedX: { min: -130, max: 130 },
       speedY: { min: -80, max: -15 },
       gravityY: 150,
-      scale: { start: 0.75, end: 0.1 },
+      scale: { start: 0.75 / k, end: 0.1 / k },
       alpha: { start: 0.75, end: 0 },
       maxAliveParticles: 40,
     })
@@ -130,7 +132,7 @@ export function createFeedbackEffects(scene: Phaser.Scene, isReducedMotion: () =
       speed: { min: 60, max: 170 },
       angle: { min: 0, max: 360 },
       gravityY: 70,
-      scale: { start: 0.6, end: 0 },
+      scale: { start: 0.6 / k, end: 0 },
       alpha: { start: 1, end: 0 },
       maxAliveParticles: 48,
     })
